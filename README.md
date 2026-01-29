@@ -1,3 +1,13 @@
+**Current objective**
+Terraform for: API gateway /health
+               Lamda for GET /health
+               Cloudwatch log group
+               Budget alarms
+               DynamoDB table
+               SQS queue + DLQ 
+
+
+
 Data source - Bimmerpost
               Youtube
               B58 facebook groups
