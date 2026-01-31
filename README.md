@@ -1,5 +1,7 @@
 **Current objective**
 POINT BEDROCK KNOWLEDGEBASE TO OUR S3 bucket, do some testing, then clean the data. 
+Clean data - bucket data by issue. 
+More data on common issues. 
 
 Terraform for: API gateway /health
                Lamda for GET /health
