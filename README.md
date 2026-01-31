@@ -1,4 +1,6 @@
 **Current objective**
+POINT BEDROCK KNOWLEDGEBASE TO OUR S3 bucket, do some testing, then clean the data. 
+
 Terraform for: API gateway /health
                Lamda for GET /health
                Cloudwatch log group
