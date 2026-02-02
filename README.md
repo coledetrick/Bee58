@@ -8,3 +8,8 @@ Gather data and context.
 3. if/then statements built upon real experience and knowledge of the platform.
 4. then UX.
 5. Hosted on AWS
+
+Metric (MHD Column Name),Type,"The ""Golden"" Goal"
+Ignition Correction Cyl 1-6,Reaction,0.0 across all cylinders. Anything more negative than -3.0 suggests knock or poor fuel.
+Boost Pressure (Target vs Actual),Delta,"Actual within ±1.0 psi of Target. If Actual is much lower, check for a boost leak."
+Rail Pressure (Target vs Actual),Delta,"Actual stays above 2,500 psi (Gen 1) or 2,900 psi (TU). Dips indicate a struggling fuel pump."
