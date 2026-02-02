@@ -23,3 +23,10 @@ Throttle Plate Angle (%): If the pedal is 100% but this drops to 80% or less, th
 WGDC (Wastegate Duty Cycle) (%): Tells you how hard the turbo is working.
 
 Logic: High WGDC + Low Boost = Boost Leak.
+
+
+IAT (Intake Air Temperature): If IATs rise more than 20-30°F during a single pull, the water-to-air intercooler may be struggling.
+
+STFT / LTFT (Short/Long Term Fuel Trims): If these are adding more than 15% fuel, you might have a vacuum leak or a scaling issue with the injectors.
+
+Oil & Coolant Temp: Essential for "Sanity Checks." If a user does a pull while the oil is only 100°F (too cold), your bot should flag this as "Unsafe Operating Procedure."
