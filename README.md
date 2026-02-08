@@ -7,7 +7,7 @@ Gather data and context.
 2. pick out the red flags (easy issues such as AFR Spikes, Throttle Mismatch, Hesitation RPM Zone, Idle AFR Instability, Repeating AFR = 235.19, timing corrections, ETC.)
 3. if/then statements built upon real experience and knowledge of the platform.
 4. then UX.
-5. Hosted on AWS
+5. Hosted on AWS (get a local copy running before any infra...)
 
 Metric (MHD Column Name),Type,"The ""Golden"" Goal"
 Ignition Correction Cyl 1-6,Reaction,0.0 across all cylinders. Anything more negative than -3.0 suggests knock or poor fuel.
