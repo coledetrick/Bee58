@@ -1,7 +1,7 @@
 B58 log analyzer
 
 **todo**
-
+(Grab your own manual log)
 1. Local representation of the program
   1.1 Parse MHD CSV column names.
   1.2 Going to need to manually code the analysis, meaning we will need to know why we are looking for certain columns and why these columns matter, break down what the manual process is.  
