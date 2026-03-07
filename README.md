@@ -1,13 +1,10 @@
 B58 log analyzer
 
 **todo**
-Gather data and context.
 
-1. Get a "Golden Log" - datazap.me (For stock, stage 1, stage 2, stage 2+) I will probably have to start with multiple good, and multiple bad, just to train for acuracy.
-2. pick out the red flags (easy issues such as AFR Spikes, Throttle Mismatch, Hesitation RPM Zone, Idle AFR Instability, Repeating AFR = 235.19, timing corrections, ETC.)
-3. if/then statements built upon real experience and knowledge of the platform. (seems kinda archaeic but we want deterministic)
-4. then UX.
-5. Hosted on AWS (get a local copy running before any infra...)
+1. Local representation of the program
+  1.1 Parse MHD CSV column names.
+  1.2 Going to need to manually code the analysis, meaning we will need to know why we are looking for certain columns and why these columns matter, break down what the manual process is.  
 
 Metric (MHD Column Name),Type,"The ""Golden"" Goal"
 Ignition Correction Cyl 1-6,Reaction,0.0 across all cylinders. Anything more negative than -3.0 suggests knock or poor fuel.
