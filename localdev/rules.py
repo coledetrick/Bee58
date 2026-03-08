@@ -98,7 +98,7 @@ def _detect_tuner(self):
         if not pre_spool.empty:
             spool_lag = diffs.loc[pre_spool.index].max()
             if spool_lag > 5.0:
-                self.report['performance_insights'].append(f"ℹ️ Turbo Spool: Physical lag of {round(spool_lag, 1)} PSI below 3200 RPM (Normal for B58).")
+                self.report['performance_insights'].append(f"ℹ️ Turbo Spool: Physical lag of {round(spool_lag, 1)} PSI below 3200 RPM (Normal as the turbo takes time to spool up.).")
 
     def _check_ignition_contextual(self):
         if not self.timing_cols: return
