@@ -26,12 +26,19 @@ class B58DiagnosticEngine:
 
         self.report = {"score": 100, "status": "Healthy", "alerts": [], "performance_insights": []}
 
-    def _detect_tuner(self):
-        """Identifies the tuner based on signature columns."""
+def _detect_tuner(self):
+        """Identifies the tuner based on signature columns or raises ValueError."""
+        # MHD Indicators
         if "Accel Ped. Pos. (%)" in self.cols or "Cyl1 Timing Cor (*)" in self.cols:
             return "MHD"
-        return "BM3"
-
+        
+        # BM3 Indicators (Common unique headers for Bootmod3)
+        elif "Accel. Pedal[%]" in self.cols or "Engine speed[1/min]" in self.cols:
+            return "BM3"
+            
+        # If neither is found, raise an exception to be caught by the UI/Main loop
+        raise ValueError("Platform not currently supported.")
+    
     def _get_static_map(self):
         """Returns the static column names for the detected tuner."""
         if self.tuner_type == "MHD":
