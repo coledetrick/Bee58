@@ -26,7 +26,7 @@ class B58DiagnosticEngine:
 
         self.report = {"score": 100, "status": "Healthy", "alerts": [], "performance_insights": []}
 
-def _detect_tuner(self):
+    def _detect_tuner(self):
         """Identifies the tuner based on signature columns or raises ValueError."""
         # MHD Indicators
         if "Accel Ped. Pos. (%)" in self.cols or "Cyl1 Timing Cor (*)" in self.cols:
