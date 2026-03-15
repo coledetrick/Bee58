@@ -1,11 +1,4 @@
 B58 log analyzer
 
 **todo**
-I believe the plotly graphs are wrong
-- Figure out why
-
-Rigorous testing of the program for more insight.
-- Give us more edge cases
-
-Implement actionable advice functionality.
-- Needs to be consistent and show its thinking.
+Just get a really solid log analyzer built, get a good understanding of how it works and then move on to infra. 
