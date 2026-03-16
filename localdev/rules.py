@@ -9,7 +9,7 @@ class B58DiagnosticEngine:
         
         self.map = self._get_static_map()
         
-        # Timing Columns
+        # Timing Correction Columns
         if self.tuner_type == "MHD":
             self.timing_cols = [f"Cyl{i} Timing Cor (*)" for i in range(1, 7) if f"Cyl{i} Timing Cor (*)" in self.cols]
         else:
@@ -22,20 +22,16 @@ class B58DiagnosticEngine:
             wot_filter = self.df[self.df[pedal_col] > 85]
             
             if not wot_filter.empty:
-                # Group rows where the index difference is > 1 to find continuous pulls
                 pull_groups = (wot_filter.index.to_series().diff() > 1).cumsum()
                 self.all_pulls = [group for _, group in wot_filter.groupby(pull_groups)]
-                
-                # Automatically select the longest continuous pull for analysis
                 self.wot = max(self.all_pulls, key=len).copy()
             else:
                 self.wot = pd.DataFrame()
-                self.all_pulls = []
         else:
             self.wot = pd.DataFrame()
-            self.all_pulls = []
 
-        self.report = {"score": 100, "status": "Healthy", "alerts": [], "performance_insights": []}
+        # Added 'diagnosis' to the report dictionary
+        self.report = {"score": 100, "status": "Healthy", "alerts": [], "performance_insights": [], "diagnosis": []}
 
     def _detect_tuner(self):
         if "Accel Ped. Pos. (%)" in self.cols or "Cyl1 Timing Cor (*)" in self.cols:
@@ -45,6 +41,7 @@ class B58DiagnosticEngine:
         raise ValueError("Platform not currently supported. Please upload an MHD or BM3 CSV.")
     
     def _get_static_map(self):
+        # Meticulously mapped headers for ultimate accuracy
         if self.tuner_type == "MHD":
             return {
                 'pedal': 'Accel Ped. Pos. (%)',
@@ -59,7 +56,12 @@ class B58DiagnosticEngine:
                 'wgdc': 'WGDC (%)', 
                 'knock': 'Knock Detect',
                 'lpfp': 'Fuel low pressure sensor (PSI)',
-                'tq_lim': 'Torque Lim. active'
+                'tq_lim': 'Torque Lim. active',
+                'afr_target': 'AFR Target',
+                'afr_actual': 'AFR 1',
+                'load_target': 'Load req. (%)',
+                'load_actual': 'Load act. (%)',
+                'timing_adv': 'Timing Cyl. 1 (*)'
             }
         else: 
             return {
@@ -75,137 +77,149 @@ class B58DiagnosticEngine:
                 'wgdc': 'WGDC[%]',
                 'knock': 'Knock Detected',
                 'lpfp': 'LPFP Act.[psig]',
-                'tq_lim': 'Torque Limiter Active'
+                'tq_lim': 'Torque Limiter Active',
+                'afr_target': 'AFR Target',
+                'afr_actual': 'AFR', # BM3 sometimes logs Bank 1, but usually just AFR
+                'load_target': 'Load Target[%]',
+                'load_actual': 'Load Actual[%]',
+                'timing_adv': '(RAM) Ignition Timing Cyl. 1[°]'
             }
 
     def run_analysis(self):
         if self.wot.empty: return None
         
+        # Hardware & Safety Checks
         self._check_boost_with_spool_awareness()
         self._check_ignition_contextual()
         self._check_fuel_pressure()
         self._check_throttle_closures()
         self._check_fuel_trims()
         self._check_iat_delta()
-        
-        # New "Next-Level" Checks
         self._check_wgdc()
         self._check_knock()
         self._check_lpfp()
         self._check_torque_limiters()
         
+        # Tuning Strategy Checks
+        self._check_afr()
+        self._check_load()
+        self._check_timing_advance()
         self._calculate_performance_metrics()
+
+        # The Synthesis Engine (Root Cause Analysis)
+        self._synthesize_diagnosis()
 
         if self.report['alerts']:
             self.report['status'] = "Needs Attention"
-            self.report['score'] = max(10, self.report['score'] - 40)
+            self.report['score'] = max(10, self.report['score'] - (len(self.report['alerts']) * 15))
         
         return self.report
+
+    # --- INDIVIDUAL PARAMETER CHECKS ---
 
     def _check_boost_with_spool_awareness(self):
         m = self.map
         diffs = pd.to_numeric(self.wot[m['boost_target']]) - pd.to_numeric(self.wot[m['boost_actual']])
-        
         post_spool = self.wot[self.wot[m['rpm']] > 3500]
         if not post_spool.empty:
             leak_diffs = diffs.loc[post_spool.index]
-            
             if leak_diffs.max() > 3.0:
-                idx = leak_diffs.idxmax()
-                rpm_at = int(self.wot.loc[idx, m['rpm']])
-                self.report['alerts'].append(f"💨 Boost Leak: {round(leak_diffs.max(), 1)} PSI under target detected at {rpm_at} RPM.")
-                
+                self.report['alerts'].append(f"💨 Boost Leak: {round(leak_diffs.max(), 1)} PSI under target detected.")
             if leak_diffs.min() < -3.0:
-                idx = leak_diffs.idxmin()
-                rpm_at = int(self.wot.loc[idx, m['rpm']])
-                self.report['alerts'].append(f"⚠️ Overboost: {abs(round(leak_diffs.min(), 1))} PSI over target detected at {rpm_at} RPM.")
-
-        pre_spool = self.wot[self.wot[m['rpm']] < 3200]
-        if not pre_spool.empty:
-            spool_lag = diffs.loc[pre_spool.index].max()
-            if spool_lag > 5.0:
-                self.report['performance_insights'].append(f"ℹ️ Turbo Spool: Physical lag of {round(spool_lag, 1)} PSI below 3200 RPM.")
+                self.report['alerts'].append(f"⚠️ Overboost: {abs(round(leak_diffs.min(), 1))} PSI over target detected.")
 
     def _check_ignition_contextual(self):
         if not self.timing_cols: return
         m = self.map
         pull_data = self.wot[self.timing_cols].apply(pd.to_numeric, errors='coerce')
-        
         if pull_data.min().min() < -3.5:
             worst_idx = pull_data.min(axis=1).idxmin()
             worst_val = pull_data.loc[worst_idx].min()
-            worst_cyl_col = pull_data.loc[worst_idx].idxmin()
-            rpm_at = int(self.wot.loc[worst_idx, m['rpm']])
-            
-            cyl_num = ''.join(filter(str.isdigit, worst_cyl_col))
-            self.report['alerts'].append(f"🔥 Timing Pull: {worst_val}° on Cylinder {cyl_num} at {rpm_at} RPM.")
+            worst_cyl = ''.join(filter(str.isdigit, pull_data.loc[worst_idx].idxmin()))
+            self.report['alerts'].append(f"🔥 Timing Pull: {worst_val}° on Cyl {worst_cyl}.")
 
     def _check_fuel_pressure(self):
         m = self.map
         rail_data = pd.to_numeric(self.wot[m['rail']], errors='coerce')
         if rail_data.min() < 1900:
-            rpm_at = int(self.wot.loc[rail_data.idxmin(), m['rpm']])
-            self.report['alerts'].append(f"🔴 HPFP Crash: Fuel pressure dipped to {int(rail_data.min())} PSI at {rpm_at} RPM.")
-
-    def _check_throttle_closures(self):
-        m = self.map
-        throttle_data = pd.to_numeric(self.wot[m['throttle']], errors='coerce')
-        if throttle_data.min() < 93:
-            rpm_at = int(self.wot.loc[throttle_data.idxmin(), m['rpm']])
-            self.report['performance_insights'].append(f"🟡 Throttle Closure: ECU limited throttle to {int(throttle_data.min())}% at {rpm_at} RPM.")
-
-    def _check_fuel_trims(self):
-        m = self.map
-        if m['stft'] not in self.cols: return
-        stft_data = pd.to_numeric(self.wot[m['stft']], errors='coerce')
-        if stft_data.max() > 25:
-            rpm_at = int(self.wot.loc[stft_data.idxmax(), m['rpm']])
-            self.report['alerts'].append(f"⛽ Fuel Trims: STFT maxed out at +{int(stft_data.max())}% at {rpm_at} RPM (Running Lean).")
-
-    def _check_iat_delta(self):
-        m = self.map
-        if m['iat'] not in self.cols: return
-        iat_data = pd.to_numeric(self.wot[m['iat']], errors='coerce')
-        if iat_data.empty: return
-        
-        delta = iat_data.iloc[-1] - iat_data.iloc[0]
-        if delta > 20:
-            self.report['alerts'].append(f"🌡️ IAT Heat Soak: Intake temps rose by {int(delta)}°F during the pull.")
-        elif delta > 12:
-            self.report['performance_insights'].append(f"🟡 IAT Rise: Intake temps rose by {int(delta)}°F. Intercooler is working hard.")
-
-    def _check_wgdc(self):
-        m = self.map
-        if m['wgdc'] not in self.cols: return
-        wgdc_data = pd.to_numeric(self.wot[m['wgdc']], errors='coerce')
-        if wgdc_data.max() > 95:
-            rpm_at = int(self.wot.loc[wgdc_data.idxmax(), m['rpm']])
-            self.report['performance_insights'].append(f"🐌 Turbo Headroom: WGDC maxed out at >95% near {rpm_at} RPM. The turbo has no remaining headroom.")
-
-    def _check_knock(self):
-        m = self.map
-        if m['knock'] not in self.cols: return
-        knock_data = pd.to_numeric(self.wot[m['knock']], errors='coerce')
-        if knock_data.max() > 0:
-            rpm_at = int(self.wot.loc[knock_data.idxmax(), m['rpm']])
-            self.report['alerts'].append(f"🚨 CRITICAL: Engine knock detected at {rpm_at} RPM. Check fuel quality and log safety immediately.")
-            self.report['score'] = 0  # Knock immediately tanks the health score
+            self.report['alerts'].append(f"🔴 HPFP Crash: Fuel pressure dipped to {int(rail_data.min())} PSI.")
 
     def _check_lpfp(self):
         m = self.map
         if m['lpfp'] not in self.cols: return
         lpfp_data = pd.to_numeric(self.wot[m['lpfp']], errors='coerce')
         if lpfp_data.min() < 55:
-            rpm_at = int(self.wot.loc[lpfp_data.idxmin(), m['rpm']])
-            self.report['alerts'].append(f"📉 LPFP Starvation: Low pressure fuel pump dropped to {int(lpfp_data.min())} PSI at {rpm_at} RPM.")
+            self.report['alerts'].append(f"📉 LPFP Starvation: Low pressure pump dropped to {int(lpfp_data.min())} PSI.")
+
+    def _check_throttle_closures(self):
+        m = self.map
+        throttle = pd.to_numeric(self.wot[m['throttle']], errors='coerce')
+        if throttle.min() < 93:
+            self.report['performance_insights'].append(f"🟡 Throttle Closure: ECU limited throttle to {int(throttle.min())}%.")
+
+    def _check_fuel_trims(self):
+        m = self.map
+        if m['stft'] not in self.cols: return
+        stft = pd.to_numeric(self.wot[m['stft']], errors='coerce')
+        if stft.max() > 25:
+            self.report['alerts'].append(f"⛽ Fuel Trims: STFT maxed out at +{int(stft.max())}%.")
+
+    def _check_iat_delta(self):
+        m = self.map
+        if m['iat'] not in self.cols: return
+        iat = pd.to_numeric(self.wot[m['iat']], errors='coerce')
+        if iat.empty: return
+        delta = iat.iloc[-1] - iat.iloc[0]
+        if delta > 20:
+            self.report['alerts'].append(f"🌡️ IAT Heat Soak: Intake temps rose by {int(delta)}°F.")
+        elif delta > 12:
+            self.report['performance_insights'].append(f"🟡 IAT Rise: Intake temps rose by {int(delta)}°F.")
+
+    def _check_wgdc(self):
+        m = self.map
+        if m['wgdc'] not in self.cols: return
+        wgdc = pd.to_numeric(self.wot[m['wgdc']], errors='coerce')
+        if wgdc.max() > 95:
+            self.report['performance_insights'].append(f"🐌 Turbo Headroom: WGDC maxed out (>95%).")
+
+    def _check_knock(self):
+        m = self.map
+        if m['knock'] not in self.cols: return
+        knock = pd.to_numeric(self.wot[m['knock']], errors='coerce')
+        if knock.max() > 0:
+            self.report['alerts'].append(f"🚨 CRITICAL: Engine knock detected.")
+            self.report['score'] = 0 
 
     def _check_torque_limiters(self):
         m = self.map
         if m['tq_lim'] not in self.cols: return
-        tq_data = pd.to_numeric(self.wot[m['tq_lim']], errors='coerce')
-        if tq_data.max() > 0:
-            rpm_at = int(self.wot.loc[tq_data.idxmax(), m['rpm']])
-            self.report['performance_insights'].append(f"⚙️ Torque Intervention: Transmission/ECU torque limiter became active at {rpm_at} RPM.")
+        tq = pd.to_numeric(self.wot[m['tq_lim']], errors='coerce')
+        if tq.max() > 0:
+            self.report['performance_insights'].append(f"⚙️ Torque Intervention: TCU/ECU limiter active.")
+
+    def _check_afr(self):
+        m = self.map
+        if m['afr_target'] not in self.cols or m['afr_actual'] not in self.cols: return
+        target = pd.to_numeric(self.wot[m['afr_target']], errors='coerce')
+        actual = pd.to_numeric(self.wot[m['afr_actual']], errors='coerce')
+        diff = actual - target
+        if diff.max() > 0.8:
+            self.report['alerts'].append(f"🚨 Dangerous Lean Condition: AFR spiked {round(diff.max(), 1)} points above target.")
+
+    def _check_load(self):
+        m = self.map
+        if m['load_target'] not in self.cols or m['load_actual'] not in self.cols: return
+        target = pd.to_numeric(self.wot[m['load_target']], errors='coerce')
+        actual = pd.to_numeric(self.wot[m['load_actual']], errors='coerce')
+        if (target - actual).max() > 15:
+            self.report['performance_insights'].append(f"📉 Load Miss: Engine missed load target by >15%. Power is reduced.")
+
+    def _check_timing_advance(self):
+        m = self.map
+        if m['timing_adv'] not in self.cols: return
+        adv = pd.to_numeric(self.wot[m['timing_adv']], errors='coerce')
+        if adv.iloc[-1] < 8:
+            self.report['performance_insights'].append(f"🐢 Conservative Timing: Peak advance was only {round(adv.iloc[-1], 1)}°. Tune may be octane limited.")
 
     def _calculate_performance_metrics(self):
         m = self.map
@@ -213,4 +227,39 @@ class B58DiagnosticEngine:
         rpm_gain = self.wot[m['rpm']].iloc[-1] - self.wot[m['rpm']].iloc[0]
         if duration > 0:
             accel = int(rpm_gain / duration)
-            self.report['performance_insights'].append(f"📈 Performance: Acceleration rate is {accel} RPM/sec.")
+            self.report['performance_insights'].append(f"📈 Acceleration Rate: {accel} RPM/sec.")
+
+    # --- THE SYNTHESIS ENGINE ---
+    def _synthesize_diagnosis(self):
+        """Cross-references alerts to determine the root cause."""
+        alerts_str = " ".join(self.report['alerts'])
+        insights_str = " ".join(self.report['performance_insights'])
+        diagnosis = []
+
+        # 1. Cascading Fuel Failure vs HPFP Limit
+        if "HPFP Crash" in alerts_str and "LPFP Starvation" in alerts_str:
+            diagnosis.append("🛠️ **Cascading Fuel Failure:** Your High-Pressure Fuel Pump is crashing because the in-tank Low-Pressure Fuel Pump is failing to feed it. Fix/upgrade the LPFP first.")
+        elif "HPFP Crash" in alerts_str:
+            diagnosis.append("🛠️ **HPFP Limit Reached:** Your HPFP is crashing, but the LPFP is healthy. You have exceeded the physical limits of the stock HPFP for this fuel blend. Consider a TU/Dorch upgrade or run less E85.")
+
+        # 2. Dangerous Lean Condition
+        if "Dangerous Lean Condition" in alerts_str:
+            diagnosis.append("🚨 **CRITICAL SAFETY:** The car is running dangerously lean at WOT. DO NOT do another pull. Inspect injectors, fuel pumps, and primary O2 sensor immediately.")
+
+        # 3. Overworked Turbo
+        if "Boost Leak" in alerts_str and "WGDC maxed" in insights_str:
+            diagnosis.append("🛠️ **Overworked Turbo:** A physical boost leak is forcing your wastegate to 100% to compensate. This is choking the turbo and superheating the intake air. Check charge pipe and inlet connections.")
+
+        # 4. Octane/Knock Limit
+        if ("CRITICAL: Engine knock" in alerts_str or "Timing Pull" in alerts_str) and "IAT Heat Soak" not in alerts_str:
+            diagnosis.append("🛠️ **Octane Limit Reached:** You are experiencing significant timing corrections without severe intake heat. The fuel quality is too poor for this map's timing targets. Add 1-2 gallons of E85 or flash to a lower octane map.")
+
+        # 5. Transmission Limit
+        if "Throttle Closure" in insights_str and "Torque Intervention" in insights_str:
+            diagnosis.append("⚙️ **TCU Intervention:** The engine is producing more torque than the transmission allows, causing a throttle closure. You may need a transmission tune (xHP) to raise the torque limits.")
+
+        # Clean Bill of Health
+        if not diagnosis and not self.report['alerts']:
+            diagnosis.append("✅ **Clean Bill of Health:** Hardware is happy, fuel pressure is stable, and timing is clean. The car is running exactly as the tuner intended.")
+
+        self.report['diagnosis'] = diagnosis
