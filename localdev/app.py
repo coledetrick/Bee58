@@ -33,7 +33,19 @@ def main():
             c2.metric("Status", results['status'])
             c3.metric("WOT Samples Analyzed", len(engine.wot))
 
-            # --- FINDINGS SECTIONS ---
+            # --- THE FINAL VERDICT (Full Width) ---
+            st.subheader("🧠 Automated Tuner Diagnosis")
+            for diag in results['diagnosis']:
+                if "✅" in diag:
+                    st.success(diag)
+                elif "🚨" in diag:
+                    st.error(diag)
+                else:
+                    st.warning(diag)
+            
+            st.divider()
+
+            # --- FINDINGS SECTIONS (Two Columns) ---
             col_left, col_right = st.columns(2)
             
             with col_left:
@@ -53,7 +65,7 @@ def main():
                             st.warning(p)
                 else:
                     st.info("No specific performance anomalies noted.")
-
+                    
             # --- ADVANCED VISUALIZATION SECTION ---
             st.divider()
             st.subheader("📈 Interactive Log Analysis")
