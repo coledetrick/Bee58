@@ -12,4 +12,4 @@
 - Testing of main app.
 - Move to serverless infra.
 - Design and documentation.
-- Peripheral taskss: cost, monitoring, alerting, research best practices and tradeoffs to learn how to migrte an on prem app to serverless arch.
+- Peripheral tasks: cost, monitoring, alerting, research best practices and tradeoffs to learn how to migrte an on prem app to serverless arch.
