@@ -2,47 +2,48 @@ import pandas as pd
 import numpy as np
 
 class B58DiagnosticEngine:
+
+    # Init df copy, cols, detect software platform of the log based on col names, and map the columns based on the platform.
     def __init__(self, df):
-        self.df = df.copy()
-        self.cols = self.df.columns.tolist()
-        self.tuner_type = self._detect_tuner()
-        
-        self.map = self._get_static_map()
-        
-        # Timing Correction Columns
-        if self.tuner_type == "MHD":
-            self.timing_cols = [f"Cyl{i} Timing Cor (*)" for i in range(1, 7) if f"Cyl{i} Timing Cor (*)" in self.cols]
-        else:
-            self.timing_cols = [f"(RAM) Ignition Timing Corr. Cyl. {i}[°]" for i in range(1, 7) if f"(RAM) Ignition Timing Corr. Cyl. {i}[°]" in self.cols]
-
-        # WOT Filter: Isolate the longest continuous pull
-        pedal_col = self.map['pedal']
-        if pedal_col in self.cols:
-            self.df[pedal_col] = pd.to_numeric(self.df[pedal_col], errors='coerce')
-            wot_filter = self.df[self.df[pedal_col] > 85]
-            
-            if not wot_filter.empty:
-                pull_groups = (wot_filter.index.to_series().diff() > 1).cumsum()
-                self.all_pulls = [group for _, group in wot_filter.groupby(pull_groups)]
-                self.wot = max(self.all_pulls, key=len).copy()
-            else:
-                self.wot = pd.DataFrame()
-        else:
-            self.wot = pd.DataFrame()
-
-        # Added 'diagnosis' to the report dictionary
+        self.df = df.copy() 
+        self.cols = self.df.columns.tolist() 
+        self.tune_platform = self._identify_tune_platform() 
+        self.map = self._normalize_col_names()
         self.report = {"score": 100, "status": "Healthy", "alerts": [], "performance_insights": [], "diagnosis": []}
+        
+        # Group the timing cols based on the platform. 
+        if self.tune_platform == "MHD":
+            self.engine_timing_cols = [f"Cyl{i} Timing Cor (*)" for i in range(1, 7) if f"Cyl{i} Timing Cor (*)" in self.cols]
+        else:
+            self.engine_timing_cols = [f"(RAM) Ignition Timing Corr. Cyl. {i}[°]" for i in range(1, 7) if f"(RAM) Ignition Timing Corr. Cyl. {i}[°]" in self.cols]
 
-    def _detect_tuner(self):
+        # Isolate the longest continuous pull, this gives us the best input possible.
+        pedal_position_col = self.map['pedal']
+        if pedal_position_col in self.cols:
+            self.df[pedal_position_col] = pd.to_numeric(self.df[pedal_position_col], errors='coerce')
+            throttle_position_filter = self.df[self.df[pedal_position_col] > 85]
+            
+            if not throttle_position_filter.empty:
+                extract_gt_85_throttle_data = (throttle_position_filter.index.to_series().diff() > 1).cumsum()
+                self.prime_extracted_data = [group for _, group in throttle_position_filter.groupby(extract_gt_85_throttle_data)]
+                self.prime_log = max(self.prime_extracted_data, key=len).copy()
+            else:
+                self.prime_log = pd.DataFrame()
+        else:
+            self.prime_log = pd.DataFrame()
+
+    
+    def _identify_tune_platform(self):
+        # Detect platform based on platform exclusive col names.
         if "Accel Ped. Pos. (%)" in self.cols or "Cyl1 Timing Cor (*)" in self.cols:
             return "MHD"
         elif "Accel. Pedal[%]" in self.cols or "Engine speed[1/min]" in self.cols:
             return "BM3"
         raise ValueError("Platform not currently supported. Please upload an MHD or BM3 CSV.")
     
-    def _get_static_map(self):
-        # Meticulously mapped headers for ultimate accuracy
-        if self.tuner_type == "MHD":
+    def _normalize_col_names(self):
+        # Normalize unique col names from either platform. 
+        if self.tune_platform == "MHD":
             return {
                 'pedal': 'Accel Ped. Pos. (%)',
                 'rpm': 'RPM (rpm)',
@@ -86,7 +87,7 @@ class B58DiagnosticEngine:
             }
 
     def run_analysis(self):
-        if self.wot.empty: return None
+        if self.prime_log.empty: return None
         
         # Hardware & Safety Checks
         self._check_boost_with_spool_awareness()
@@ -115,12 +116,11 @@ class B58DiagnosticEngine:
         
         return self.report
 
-    # --- INDIVIDUAL PARAMETER CHECKS ---
-
+# stopped here.
     def _check_boost_with_spool_awareness(self):
         m = self.map
-        diffs = pd.to_numeric(self.wot[m['boost_target']]) - pd.to_numeric(self.wot[m['boost_actual']])
-        post_spool = self.wot[self.wot[m['rpm']] > 3500]
+        diffs = pd.to_numeric(self.prime_log[m['boost_target']]) - pd.to_numeric(self.prime_log[m['boost_actual']])
+        post_spool = self.prime_log[self.prime_log[m['rpm']] > 3500]
         if not post_spool.empty:
             leak_diffs = diffs.loc[post_spool.index]
             if leak_diffs.max() > 3.0:
@@ -129,9 +129,9 @@ class B58DiagnosticEngine:
                 self.report['alerts'].append(f"⚠️ Overboost: {abs(round(leak_diffs.min(), 1))} PSI over target detected.")
 
     def _check_ignition_contextual(self):
-        if not self.timing_cols: return
+        if not self.engine_timing_cols: return
         m = self.map
-        pull_data = self.wot[self.timing_cols].apply(pd.to_numeric, errors='coerce')
+        pull_data = self.prime_log[self.engine_timing_cols].apply(pd.to_numeric, errors='coerce')
         if pull_data.min().min() < -3.5:
             worst_idx = pull_data.min(axis=1).idxmin()
             worst_val = pull_data.loc[worst_idx].min()
@@ -140,34 +140,34 @@ class B58DiagnosticEngine:
 
     def _check_fuel_pressure(self):
         m = self.map
-        rail_data = pd.to_numeric(self.wot[m['rail']], errors='coerce')
+        rail_data = pd.to_numeric(self.prime_log[m['rail']], errors='coerce')
         if rail_data.min() < 1900:
             self.report['alerts'].append(f"🔴 HPFP Crash: Fuel pressure dipped to {int(rail_data.min())} PSI.")
 
     def _check_lpfp(self):
         m = self.map
         if m['lpfp'] not in self.cols: return
-        lpfp_data = pd.to_numeric(self.wot[m['lpfp']], errors='coerce')
+        lpfp_data = pd.to_numeric(self.prime_log[m['lpfp']], errors='coerce')
         if lpfp_data.min() < 55:
             self.report['alerts'].append(f"📉 LPFP Starvation: Low pressure pump dropped to {int(lpfp_data.min())} PSI.")
 
     def _check_throttle_closures(self):
         m = self.map
-        throttle = pd.to_numeric(self.wot[m['throttle']], errors='coerce')
+        throttle = pd.to_numeric(self.prime_log[m['throttle']], errors='coerce')
         if throttle.min() < 93:
             self.report['performance_insights'].append(f"🟡 Throttle Closure: ECU limited throttle to {int(throttle.min())}%.")
 
     def _check_fuel_trims(self):
         m = self.map
         if m['stft'] not in self.cols: return
-        stft = pd.to_numeric(self.wot[m['stft']], errors='coerce')
+        stft = pd.to_numeric(self.prime_log[m['stft']], errors='coerce')
         if stft.max() > 25:
             self.report['alerts'].append(f"⛽ Fuel Trims: STFT maxed out at +{int(stft.max())}%.")
 
     def _check_iat_delta(self):
         m = self.map
         if m['iat'] not in self.cols: return
-        iat = pd.to_numeric(self.wot[m['iat']], errors='coerce')
+        iat = pd.to_numeric(self.prime_log[m['iat']], errors='coerce')
         if iat.empty: return
         delta = iat.iloc[-1] - iat.iloc[0]
         if delta > 20:
@@ -178,14 +178,14 @@ class B58DiagnosticEngine:
     def _check_wgdc(self):
         m = self.map
         if m['wgdc'] not in self.cols: return
-        wgdc = pd.to_numeric(self.wot[m['wgdc']], errors='coerce')
+        wgdc = pd.to_numeric(self.prime_log[m['wgdc']], errors='coerce')
         if wgdc.max() > 95:
             self.report['performance_insights'].append(f"🐌 Turbo Headroom: WGDC maxed out (>95%).")
 
     def _check_knock(self):
         m = self.map
         if m['knock'] not in self.cols: return
-        knock = pd.to_numeric(self.wot[m['knock']], errors='coerce')
+        knock = pd.to_numeric(self.prime_log[m['knock']], errors='coerce')
         if knock.max() > 0:
             self.report['alerts'].append(f"🚨 CRITICAL: Engine knock detected.")
             self.report['score'] = 0 
@@ -193,15 +193,15 @@ class B58DiagnosticEngine:
     def _check_torque_limiters(self):
         m = self.map
         if m['tq_lim'] not in self.cols: return
-        tq = pd.to_numeric(self.wot[m['tq_lim']], errors='coerce')
+        tq = pd.to_numeric(self.prime_log[m['tq_lim']], errors='coerce')
         if tq.max() > 0:
             self.report['performance_insights'].append(f"⚙️ Torque Intervention: TCU/ECU limiter active.")
 
     def _check_afr(self):
         m = self.map
         if m['afr_target'] not in self.cols or m['afr_actual'] not in self.cols: return
-        target = pd.to_numeric(self.wot[m['afr_target']], errors='coerce')
-        actual = pd.to_numeric(self.wot[m['afr_actual']], errors='coerce')
+        target = pd.to_numeric(self.prime_log[m['afr_target']], errors='coerce')
+        actual = pd.to_numeric(self.prime_log[m['afr_actual']], errors='coerce')
         diff = actual - target
         if diff.max() > 0.8:
             self.report['alerts'].append(f"🚨 Dangerous Lean Condition: AFR spiked {round(diff.max(), 1)} points above target.")
@@ -209,22 +209,22 @@ class B58DiagnosticEngine:
     def _check_load(self):
         m = self.map
         if m['load_target'] not in self.cols or m['load_actual'] not in self.cols: return
-        target = pd.to_numeric(self.wot[m['load_target']], errors='coerce')
-        actual = pd.to_numeric(self.wot[m['load_actual']], errors='coerce')
+        target = pd.to_numeric(self.prime_log[m['load_target']], errors='coerce')
+        actual = pd.to_numeric(self.prime_log[m['load_actual']], errors='coerce')
         if (target - actual).max() > 15:
             self.report['performance_insights'].append(f"📉 Load Miss: Engine missed load target by >15%. Power is reduced.")
 
     def _check_timing_advance(self):
         m = self.map
         if m['timing_adv'] not in self.cols: return
-        adv = pd.to_numeric(self.wot[m['timing_adv']], errors='coerce')
+        adv = pd.to_numeric(self.prime_log[m['timing_adv']], errors='coerce')
         if adv.iloc[-1] < 8:
             self.report['performance_insights'].append(f"🐢 Conservative Timing: Peak advance was only {round(adv.iloc[-1], 1)}°. Tune may be octane limited.")
 
     def _calculate_performance_metrics(self):
         m = self.map
-        duration = self.wot[m['time']].iloc[-1] - self.wot[m['time']].iloc[0]
-        rpm_gain = self.wot[m['rpm']].iloc[-1] - self.wot[m['rpm']].iloc[0]
+        duration = self.prime_log[m['time']].iloc[-1] - self.prime_log[m['time']].iloc[0]
+        rpm_gain = self.prime_log[m['rpm']].iloc[-1] - self.prime_log[m['rpm']].iloc[0]
         if duration > 0:
             accel = int(rpm_gain / duration)
             self.report['performance_insights'].append(f"📈 Acceleration Rate: {accel} RPM/sec.")
