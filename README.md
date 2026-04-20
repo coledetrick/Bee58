@@ -6,3 +6,4 @@ Move to infra.
 * cost monitoring, budgeting
 * observability
 * etc. best practices
+* test
