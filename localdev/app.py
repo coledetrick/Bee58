@@ -17,7 +17,7 @@ st.set_page_config(page_title="B58 Specialized Diagnostic", layout="wide")
 
 
 def main():
-    st.title("🏁 B58 Specialized Diagnostic")
+    st.title("B58 Diagnostic")
     st.caption("Professional-grade log analysis for Gen 1 B58 (Supports MHD & BM3)")
 
     uploaded_file = st.file_uploader("Upload CSV Log", type=["csv"])

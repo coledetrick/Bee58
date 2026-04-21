@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: bee58
+Version: 0.1.0
+Requires-Python: >=3.10
+Requires-Dist: pandas>=2.0
+Requires-Dist: numpy>=1.24
+Requires-Dist: pydantic>=2.0
+Provides-Extra: dev
+Requires-Dist: streamlit>=1.30; extra == "dev"
+Requires-Dist: plotly>=5.0; extra == "dev"
+Requires-Dist: pytest>=7.0; extra == "dev"
