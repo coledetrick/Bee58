@@ -294,3 +294,173 @@ def test_pull_count_in_report():
     df = make_multi_pull_df([{}, {}, {}])
     report = B58DiagnosticEngine(df).run_analysis()
     assert report.pull_count == 3
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pillar A — intra-log statistical normalization (2 tests)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def make_mhd_df_with_baseline(n_baseline: int = 30, n_wot: int = 20, **wot_overrides) -> pd.DataFrame:
+    """
+    Build a log with a non-WOT baseline section followed by a WOT section.
+    The baseline is cruise data (pedal=10%) that Pillar A uses to compute per-car stats.
+    """
+    baseline = make_mhd_df(n=n_baseline)
+    baseline["Accel Ped. Pos. (%)"] = 10.0
+    baseline["Time"] = np.linspace(0, n_baseline - 1, n_baseline)
+
+    wot = make_mhd_df(n=n_wot, **wot_overrides)
+    wot["Time"] = np.linspace(n_baseline, n_baseline + n_wot - 1, n_wot)
+
+    return pd.concat([baseline, wot], ignore_index=True)
+
+
+def test_pillar_a_rail_deviation_fires_when_wot_rail_low():
+    # Cruise rail = 2200 PSI; WOT rail = 1750 PSI — well below baseline
+    df = make_mhd_df_with_baseline(
+        **{"Rail pressure mean 1 (PSI)": 1750.0}
+    )
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
+    assert "rail_deviation_a" in flags
+
+
+def test_pillar_a_no_baseline_no_deviation_flag():
+    # All-WOT log — Pillar A should skip gracefully (no baseline data)
+    df = make_mhd_df()
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
+    assert "rail_deviation_a" not in flags
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pillar B — rate-of-change / delta detection (5 tests)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_pillar_b_rail_drop_rate_fires():
+    # Rail crashes from 2200 to 1600 in 0.5 seconds post-spool = 1200 PSI/s
+    df = make_mhd_df()
+    rail = np.full(20, 2200.0)
+    rail[10:] = 1600.0  # sharp drop in second half
+    df["Rail pressure mean 1 (PSI)"] = rail
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
+    assert "rail_drop_rate_b" in flags
+
+
+def test_pillar_b_timing_retard_event_fires():
+    # Timing drops 4° over 3 samples mid-pull
+    df = make_mhd_df()
+    timing = np.full(20, 12.0)
+    timing[8] = 12.0
+    timing[9] = 10.0
+    timing[10] = 8.0  # 4° retard over 3 samples
+    df["Timing Cyl. 1 (*)"] = timing
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
+    assert "timing_retard_event_b" in flags
+
+
+def test_pillar_b_afr_lean_swing_fires():
+    # AFR spikes 1.5 above target mid-pull
+    df = make_mhd_df()
+    afr = np.full(20, 11.5)
+    afr[8:12] = 13.0  # 1.5 above 11.5 target in the middle
+    df["AFR 1"] = afr
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
+    assert "afr_lean_swing_b" in flags
+
+
+def test_pillar_b_boost_mid_pull_drop_fires():
+    # Boost ramps to 22 PSI then collapses to 12 PSI — 10 PSI drop, well above 3 PSI threshold
+    df = make_mhd_df()
+    n = 20
+    boost = np.concatenate([np.linspace(10, 22, 12), np.full(8, 12.0)])
+    df["Boost (PSI)"] = boost
+    df["Boost target (PSI)"] = np.full(n, 22.0)  # match target so boost_leak doesn't fire
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
+    assert "boost_mid_pull_drop_b" in flags
+
+
+def test_pillar_b_iat_inter_pull_jump_fires():
+    # Pull 1 ends at IAT 90°F; Pull 2 starts at IAT 110°F — 20°F jump
+    pull1 = make_mhd_df(n=20)
+    pull1["IAT (*F)"] = np.linspace(85.0, 90.0, 20)
+    pull1["Time"] = np.linspace(0, 5, 20)
+
+    gap = make_mhd_df(n=5)
+    gap["Accel Ped. Pos. (%)"] = 0.0
+    gap["IAT (*F)"] = np.linspace(90.0, 110.0, 5)
+    gap["Time"] = np.linspace(5, 7, 5)
+
+    pull2 = make_mhd_df(n=20)
+    pull2["IAT (*F)"] = np.linspace(110.0, 112.0, 20)
+    pull2["Time"] = np.linspace(7, 12, 20)
+
+    df = pd.concat([pull1, gap, pull2], ignore_index=True)
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().performance_insights}
+    assert "iat_inter_pull_jump_b" in flags
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pillar C — cross-parameter correlation (3 tests)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_pillar_c_iat_timing_correlation_fires():
+    # IAT rises 15°F and timing retards 4° in the same pull
+    df = make_mhd_df()
+    df["IAT (*F)"] = np.linspace(80.0, 95.0, 20)    # 15°F rise
+    df["Timing Cyl. 1 (*)"] = np.linspace(12.0, 8.0, 20)  # 4° retard
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().performance_insights}
+    assert "iat_timing_correlation_c" in flags
+
+
+def test_pillar_c_boost_rail_divergence_fires():
+    # Boost climbs from 12 to 22 PSI while rail drops from 2200 to 1800 PSI post-spool
+    df = make_mhd_df()
+    n = 20
+    df["Boost (PSI)"] = np.linspace(12.0, 22.0, n)
+    df["Rail pressure mean 1 (PSI)"] = np.linspace(2200.0, 1800.0, n)
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
+    assert "boost_rail_divergence_c" in flags
+
+
+def test_pillar_c_throttle_afr_lean_fires():
+    # All WOT rows have AFR = 14.0 — lean at full throttle
+    df = make_mhd_df()
+    df["AFR 1"] = 14.0
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
+    assert "throttle_afr_lean_c" in flags
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Multi-pillar synthesis confidence (2 tests)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_synthesis_hpfp_high_confidence_when_multi_pillar():
+    # Rail drops at 240 PSI/s (fires Pillar B) AND inversely correlates with rising boost (fires Pillar C)
+    # Together they push the synthesis to "high confidence"
+    df = make_mhd_df()
+    n = 20
+    df["Rail pressure mean 1 (PSI)"] = np.linspace(2200.0, 1000.0, n)   # 240 PSI/s over 5s > threshold
+    df["Boost (PSI)"] = np.linspace(14.0, 22.0, n)
+    df["Boost target (PSI)"] = np.linspace(14.0, 22.0, n)  # match actual to avoid boost_leak flag
+    report = B58DiagnosticEngine(df).run_analysis()
+    assert any("high confidence" in d for d in report.diagnosis)
+
+
+def test_synthesis_dangerous_lean_high_confidence_when_corroborated():
+    # dangerous_lean + afr_lean_swing_b → "High Confidence" in diagnosis
+    df = make_mhd_df()
+    afr = np.full(20, 13.5)  # 2.0 above 11.5 target — triggers dangerous_lean and lean_swing
+    df["AFR 1"] = afr
+    report = B58DiagnosticEngine(df).run_analysis()
+    assert any("High Confidence" in d for d in report.diagnosis)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Alert beginner_message field (1 test)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_alerts_have_beginner_messages():
+    df = make_mhd_df()
+    df["Knock Detect"] = 1.0
+    report = B58DiagnosticEngine(df).run_analysis()
+    knock_alerts = [a for a in report.alerts if a.flag == "knock"]
+    assert knock_alerts[0].beginner_message is not None

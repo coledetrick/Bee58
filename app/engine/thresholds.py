@@ -48,6 +48,36 @@ class ThresholdConfig:
     # WOT detection
     wot_pedal_threshold: float = 85.0    # minimum pedal % to qualify a row as WOT
 
+    # ── Dynamic detection (Pillar A — intra-log statistical normalization) ──────
+    baseline_sigma: float = 2.0          # σ from non-WOT baseline before Pillar A flags
+    baseline_min_rows: int = 5           # minimum non-WOT rows to attempt Pillar A
+
+    # ── Rate-of-change thresholds (Pillar B — delta detection) ──────────────────
+    # Rail pressure drop rate during WOT ramp: PSI per second
+    rail_drop_rate_psi_per_s: float = 200.0
+    # Sudden timing retard within a 3-sample rolling window
+    timing_retard_event_deg: float = 3.0
+    # AFR lean excursion above target mid-pull
+    afr_lean_swing_delta: float = 1.2
+    # Boost drop from peak mid-pull (post-spool)
+    boost_mid_pull_drop_psi: float = 3.0
+    # IAT jump at pull start between consecutive pulls
+    iat_inter_pull_jump_f: float = 15.0
+
+    # ── Cross-parameter correlation (Pillar C) ──────────────────────────────────
+    # Pearson correlation threshold: boost vs rail_pressure — below this = diverging
+    boost_rail_corr_threshold: float = -0.5
+    # Minimum rail drop magnitude to flag Pillar C boost/rail divergence
+    boost_rail_min_drop_psi: float = 100.0
+    # Fraction of WOT samples that must be lean to flag throttle/AFR correlation
+    throttle_afr_lean_fraction: float = 0.10
+    # AFR above this at WOT is considered lean for Pillar C check
+    wot_lean_afr: float = 13.2
+    # Minimum IAT rise within a pull (°F) before checking timing correlation
+    iat_timing_rise_min_f: float = 8.0
+    # Minimum timing retard (°, negative = retard) to confirm IAT/timing correlation
+    iat_timing_retard_min_deg: float = 2.0
+
 
 # Community stage presets — use as starting points, not gospel.
 # These will be validated against real log data as the dataset grows.

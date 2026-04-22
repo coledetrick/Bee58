@@ -32,11 +32,11 @@ SEVERITY_DEDUCTIONS: dict = {
 
 class Alert(BaseModel):
     """A single diagnostic finding."""
-    # snake_case token used internally by the synthesis engine — never displayed raw
     flag: str
     severity: AlertSeverity
-    # Display-ready message for the UI; may contain emoji
     message: str
+    # Plain-English explanation for non-technical users; None = omit from beginner view
+    beginner_message: Optional[str] = None
 
 
 class PullSummary(BaseModel):
