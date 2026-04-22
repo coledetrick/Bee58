@@ -8,6 +8,14 @@ This document covers how to get Bee58 running locally, run its tests, and use it
 
 Bee58 analyzes CSV log exports from BMW B58 engine tuning platforms (MHD and BM3). It detects wide-open-throttle (WOT) pull segments, checks hardware health indicators (knock, fuel pressure, boost), scores tuning quality, and flags anything worth mentioning to a tuner. The result is a structured diagnostic report with severity-rated alerts.
 
+Detection runs on three pillars:
+
+- **Pillar A — Intra-log normalization**: Compares each parameter to the car's own non-WOT baseline instead of a fixed number. A deviation of N standard deviations from the car's idle/cruise data triggers a flag — tune-agnostic by design.
+- **Pillar B — Rate-of-change detection**: Checks how fast values move rather than their absolute level. Sudden timing retard mid-pull, a rail pressure drop during boost ramp, or AFR swinging lean are all Pillar B signals.
+- **Pillar C — Cross-parameter correlation**: Checks physical relationships that hold across all tune stages (IAT rise → timing retard, boost rise → fuel rail demand, 100% throttle → rich AFR). Divergence from those relationships is a diagnosis.
+
+A single-pillar finding is a tentative flag. Two or three pillars pointing at the same event is a high-confidence diagnosis.
+
 ---
 
 ## Prerequisites
@@ -131,14 +139,58 @@ report = engine.run_analysis()
 
 # Inspect results
 print(f"Score: {report.score}/100")
-print(f"Platform: {report.tune_platform}")
+print(f"Status: {report.status}")
+print(f"Platform: {engine.tune_platform}")
 print(f"WOT Pulls Found: {report.pull_count}")
 
 for alert in report.alerts:
     print(f"[{alert.severity}] {alert.message}")
+
+# Performance observations (no score deduction)
+for insight in report.performance_insights:
+    print(f"  note: {insight.message}")
+
+# High-level diagnosis strings (cross-pillar synthesis)
+for d in report.diagnosis:
+    print(f"  dx: {d}")
+
+# Per-pull breakdown (if multiple pulls detected)
+if report.pull_comparison:
+    for pull in report.pull_comparison:
+        print(f"  Pull {pull.pull_number}: boost={pull.max_boost_psi} psi, IAT end={pull.iat_end_f}°F")
 ```
 
-The `ThresholdConfig` dataclass (defined in `app/engine/thresholds.py`) exposes all numeric limits used by the rules engine. Pass a customized instance when analyzing logs from a non-stock tune stage.
+### Tune-Stage Presets
+
+`thresholds.py` ships four community-derived starting-point configs:
+
+```python
+from app.engine.thresholds import STAGE1, STAGE2, E30, E50
+
+engine = B58DiagnosticEngine(df, config=STAGE2)
+```
+
+| Preset | `min_rail_psi` | `boost_delta_psi` | `max_afr_delta` | Notes |
+|--------|---------------|-------------------|-----------------|-------|
+| `STAGE1` | 1900 | 3.0 | 0.8 | Default baselines (91–93 oct pump gas) |
+| `STAGE2` | 1800 | 4.0 | 0.8 | Slightly looser rail floor, wider boost tolerance |
+| `E30` | 2000 | 3.0 | 0.5 | Higher rail demand, tighter AFR tolerance |
+| `E50` | 2100 | 3.0 | 0.4 | Highest rail demand, tightest AFR tolerance |
+
+These are starting points, not gospel — validate against real logs for your specific hardware.
+
+### ThresholdConfig Reference
+
+`ThresholdConfig` (in `app/engine/thresholds.py`) exposes every numeric limit the engine uses, organized by pillar:
+
+| Group | Key fields |
+|-------|-----------|
+| Absolute thresholds | `min_rail_psi`, `min_lpfp_psi`, `max_afr_delta`, `min_timing_correction` |
+| Pillar A | `baseline_sigma`, `baseline_min_rows` |
+| Pillar B | `rail_drop_rate_psi_per_s`, `timing_retard_event_deg`, `afr_lean_swing_delta`, `boost_mid_pull_drop_psi`, `iat_inter_pull_jump_f` |
+| Pillar C | `boost_rail_corr_threshold`, `throttle_afr_lean_fraction`, `wot_lean_afr`, `iat_timing_rise_min_f` |
+
+Pass a customized instance at construction to override any subset of these.
 
 ---
 
@@ -146,16 +198,17 @@ The `ThresholdConfig` dataclass (defined in `app/engine/thresholds.py`) exposes 
 
 ```
 Bee58/
-├── app/engine/          # The diagnostic engine (Phase 1 complete)
-│   ├── rules.py         # B58DiagnosticEngine — main analysis class
-│   ├── models.py        # Pydantic schemas: Alert, DiagnosticReport, AlertSeverity
-│   └── thresholds.py    # ThresholdConfig dataclass + stage presets
+├── app/engine/              # The diagnostic engine (Phase 1 complete)
+│   ├── __init__.py          # Exports B58DiagnosticEngine, ThresholdConfig
+│   ├── rules.py             # B58DiagnosticEngine — ABC pillar detection, WOT extraction, scoring
+│   ├── models.py            # Pydantic schemas: Alert, DiagnosticReport, AlertSeverity, PullSummary
+│   └── thresholds.py        # ThresholdConfig dataclass + STAGE1/STAGE2/E30/E50 presets
 ├── localdev/
-│   └── app.py           # Streamlit UI (reference implementation)
+│   └── app.py               # Streamlit UI (reference implementation)
 ├── tests/engine/
-│   └── test_engine.py   # 23 pytest tests with synthetic DataFrames
-├── docs/                # Architecture docs for Phases 2–5
-└── pyproject.toml       # Package metadata and dependency declarations
+│   └── test_engine.py       # 23 pytest tests with synthetic DataFrames
+├── docs/                    # Architecture docs for Phases 2–5
+└── pyproject.toml           # Package metadata and dependency declarations
 ```
 
 ---

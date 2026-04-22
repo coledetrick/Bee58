@@ -16,6 +16,17 @@ from app.engine.rules import B58DiagnosticEngine
 st.set_page_config(page_title="B58 Specialized Diagnostic", layout="wide")
 
 
+def _load_csv(uploaded_file) -> pd.DataFrame:
+    import io
+    raw = uploaded_file.read().decode("utf-8", errors="replace")
+    uploaded_file.seek(0)
+    lines = [l for l in raw.splitlines() if l.strip()]
+    field_counts = [l.count(",") for l in lines]
+    max_fields = max(field_counts)
+    header_idx = next(i for i, c in enumerate(field_counts) if c == max_fields)
+    return pd.read_csv(io.StringIO(raw), skiprows=header_idx)
+
+
 def main():
     st.title("B58 Diagnostic")
     st.caption("Professional-grade log analysis for Gen 1 B58 (Supports MHD & BM3)")
@@ -24,7 +35,7 @@ def main():
 
     if uploaded_file:
         try:
-            df = pd.read_csv(uploaded_file)
+            df = _load_csv(uploaded_file)
             engine = B58DiagnosticEngine(df)
             results = engine.run_analysis()
 
