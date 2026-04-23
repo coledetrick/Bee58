@@ -6,8 +6,6 @@ Dual purpose:
 1. **Community tool** — Help BMW B58 owners who just got their first remote tune understand their car's health and build confidence reading ECU logs
 2. **Resume project** — Showcase software, DevOps, and cloud engineering skills for job applications
 
-Target roles: Software Engineer, DevOps Engineer, Cloud Engineer
-
 ---
 
 ## Target User
