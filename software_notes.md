@@ -1,4 +1,4 @@
-# Software Notes — B58 Log Analyzer
+# Notes — B58 Log Analyzer
 
 This file is a living decision log. It explains *why* things were built the way they were, records open questions, and documents how to run everything locally. Update it as the project evolves.
 
