@@ -464,3 +464,63 @@ def test_alerts_have_beginner_messages():
     report = B58DiagnosticEngine(df).run_analysis()
     knock_alerts = [a for a in report.alerts if a.flag == "knock"]
     assert knock_alerts[0].beginner_message is not None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Prime pull extraction (4 tests)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_prime_pull_contiguous():
+    # 100% pedal throughout — strict extraction captures the full segment
+    df = make_mhd_df(n=20)
+    df["Accel Ped. Pos. (%)"] = 100.0
+    engine = B58DiagnosticEngine(df)
+    assert len(engine.prime_log) == 20
+
+
+def test_prime_pull_bridges_short_cutout():
+    # Two WOT segments with a 0.4s gap — should be merged into one
+    seg1 = make_mhd_df(n=10)
+    seg1["Time"] = np.linspace(0.0, 2.0, 10)
+    seg1["Accel Ped. Pos. (%)"] = 100.0
+
+    gap = make_mhd_df(n=3)
+    gap["Time"] = np.linspace(2.1, 2.3, 3)
+    gap["Accel Ped. Pos. (%)"] = 50.0  # brief cut-out
+
+    seg2 = make_mhd_df(n=10)
+    seg2["Time"] = np.linspace(2.4, 5.0, 10)
+    seg2["Accel Ped. Pos. (%)"] = 100.0
+
+    df = pd.concat([seg1, gap, seg2], ignore_index=True)
+    engine = B58DiagnosticEngine(df)
+    assert len(engine.prime_log) == 23  # all rows merged (10 + 3 gap + 10)
+
+
+def test_prime_pull_long_gap_selects_longest():
+    # Two WOT segments with a 1.2s gap — treated as separate pulls; longer one wins
+    seg1 = make_mhd_df(n=20)
+    seg1["Time"] = np.linspace(0.0, 5.0, 20)
+    seg1["Accel Ped. Pos. (%)"] = 100.0
+
+    gap = make_mhd_df(n=5)
+    gap["Time"] = np.linspace(5.1, 6.1, 5)
+    gap["Accel Ped. Pos. (%)"] = 0.0
+
+    seg2 = make_mhd_df(n=5)
+    seg2["Time"] = np.linspace(6.2, 7.5, 5)
+    seg2["Accel Ped. Pos. (%)"] = 100.0
+
+    df = pd.concat([seg1, gap, seg2], ignore_index=True)
+    engine = B58DiagnosticEngine(df)
+    assert len(engine.prime_log) == 20  # seg1 (5.0s) beats seg2 (1.3s)
+
+
+def test_prime_pull_rpm_filter_falls_back_to_85pct_result():
+    # 100% pedal but RPM never reaches min_pull_rpm — strict prime filtered out,
+    # prime_log falls back to the 85% extraction result (which has no RPM floor)
+    df = make_mhd_df(n=20)
+    df["Accel Ped. Pos. (%)"] = 100.0
+    df["RPM (rpm)"] = 1500.0  # below min_pull_rpm=2000
+    engine = B58DiagnosticEngine(df)
+    assert len(engine.prime_log) == 20  # fallback: 85% result still covers all rows

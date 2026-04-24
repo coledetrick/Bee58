@@ -36,6 +36,9 @@ class B58DiagnosticEngine:
         self.map = self._normalize_col_names()
         self.engine_timing_cols = self._build_timing_cols()
         self.prime_log, self.prime_extracted_data = self._extract_wot_segments()
+        strict_prime = self._extract_prime_wot_pull()
+        if not strict_prime.empty:
+            self.prime_log = strict_prime
 
     # ──────────────────────────────────────────────────────────────────────────
     # Init helpers
@@ -97,6 +100,56 @@ class B58DiagnosticEngine:
         else:
             candidates = [f"(RAM) Ignition Timing Corr. Cyl. {i}[°]" for i in range(1, 7)]
         return [c for c in candidates if c in self.cols]
+
+    def _extract_prime_wot_pull(self) -> pd.DataFrame:
+        """
+        Find the single best WOT pull using a strict pedal threshold (default 99%).
+
+        Bridges short gaps (ECU cut, fuel cut, TC blip) up to max_cutout_gap_seconds
+        by including the gap rows in the returned slice so the time series stays
+        continuous. Filters out candidates that never reach min_pull_rpm or are
+        shorter than min_pull_duration_seconds. Returns the longest valid candidate,
+        or an empty DataFrame if none qualify (caller keeps the 85% fallback).
+        """
+        pedal_col = self.map["pedal"]
+        time_col = self.map["time"]
+        rpm_col = self.map["rpm"]
+
+        wot_mask = pd.to_numeric(self.df[pedal_col], errors="coerce") > self.config.wot_pedal_strict
+        wot_rows = self.df[wot_mask]
+
+        if wot_rows.empty:
+            return pd.DataFrame()
+
+        gap_labels = (wot_rows.index.to_series().diff() > 1).cumsum()
+        raw_segs: List[pd.DataFrame] = [grp for _, grp in wot_rows.groupby(gap_labels)]
+
+        # Merge adjacent segments separated by a short cut-out.
+        # Include the intervening rows from df so the time series is unbroken.
+        merged: List[pd.DataFrame] = [raw_segs[0]]
+        for seg in raw_segs[1:]:
+            prev = merged[-1]
+            t_gap = (
+                pd.to_numeric(seg[time_col].iloc[0], errors="coerce")
+                - pd.to_numeric(prev[time_col].iloc[-1], errors="coerce")
+            )
+            if t_gap <= self.config.max_cutout_gap_seconds:
+                merged[-1] = self.df.loc[prev.index[0]:seg.index[-1]].copy()
+            else:
+                merged.append(seg)
+
+        valid: List[Tuple[float, pd.DataFrame]] = []
+        for seg in merged:
+            times = pd.to_numeric(seg[time_col], errors="coerce")
+            duration = times.max() - times.min()
+            max_rpm = pd.to_numeric(seg[rpm_col], errors="coerce").max()
+            if duration >= self.config.min_pull_duration_seconds and max_rpm >= self.config.min_pull_rpm:
+                valid.append((duration, seg))
+
+        if not valid:
+            return pd.DataFrame()
+
+        return max(valid, key=lambda x: x[0])[1]
 
     def _extract_wot_segments(self) -> Tuple[pd.DataFrame, List[pd.DataFrame]]:
         pedal_col = self.map["pedal"]

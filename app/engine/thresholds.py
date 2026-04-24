@@ -48,6 +48,12 @@ class ThresholdConfig:
     # WOT detection
     wot_pedal_threshold: float = 85.0    # minimum pedal % to qualify a row as WOT
 
+    # WOT detection — prime pull (strict)
+    wot_pedal_strict: float = 99.0           # pedal threshold for prime pull extraction
+    max_cutout_gap_seconds: float = 0.5      # bridge gap ≤ this (fuel cut, TC blip, ignition cut)
+    min_pull_duration_seconds: float = 1.0   # discard pulls shorter than this
+    min_pull_rpm: int = 2000                 # discard pulls that never exceed this RPM
+
     # ── Dynamic detection (Pillar A — intra-log statistical normalization) ──────
     baseline_sigma: float = 2.0          # σ from non-WOT baseline before Pillar A flags
     baseline_min_rows: int = 5           # minimum non-WOT rows to attempt Pillar A
