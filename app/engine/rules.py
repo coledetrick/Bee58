@@ -70,6 +70,10 @@ class B58DiagnosticEngine:
                 self.df[dst] = pd.to_numeric(self.df[src], errors="coerce") * BAR_TO_PSI
         if "IAT (*C)" in self.cols and "IAT (*F)" not in self.cols:
             self.df["IAT (*F)"] = pd.to_numeric(self.df["IAT (*C)"], errors="coerce") * 9 / 5 + 32
+        if "Charge air temp. (*C)" in self.cols and "Charge air temp. (*F)" not in self.cols:
+            self.df["Charge air temp. (*F)"] = (
+                pd.to_numeric(self.df["Charge air temp. (*C)"], errors="coerce") * 9 / 5 + 32
+            )
         for src, dst in [
             ("STFT 1 (-)",    "STFT 1 (%)"),
             ("WGDC 1 (%)",    "WGDC (%)"),
@@ -100,6 +104,7 @@ class B58DiagnosticEngine:
                 "load_target":  "Load req. (%)",
                 "load_actual":  "Load act. (%)",
                 "timing_adv":   "Timing Cyl. 1 (*)",
+                "charge_air":   "Charge air temp. (*F)",
             }
         return {
             "pedal":        "Accel. Pedal[%]",
@@ -120,6 +125,7 @@ class B58DiagnosticEngine:
             "load_target":  "Load Target[%]",
             "load_actual":  "Load Actual[%]",
             "timing_adv":   "(RAM) Ignition Timing Cyl. 1[°]",
+            "charge_air":   "Charge Air Temp[F]",
         }
 
     def _build_timing_cols(self) -> List[str]:
@@ -220,6 +226,7 @@ class B58DiagnosticEngine:
         self._check_throttle_closures()
         self._check_fuel_trims()
         self._check_iat_delta()
+        self._check_charge_air_temp()
         self._check_wgdc()
         self._check_knock()
         self._check_torque_limiters()
@@ -244,6 +251,7 @@ class B58DiagnosticEngine:
 
         # Pillar C: cross-parameter physical relationships
         self._correlate_iat_timing_c()
+        self._correlate_charge_air_timing_c()
         self._correlate_boost_rail_c()
         self._correlate_throttle_afr_c()
 
@@ -321,23 +329,44 @@ class B58DiagnosticEngine:
         actual = pd.to_numeric(self.prime_log[m["boost_actual"]], errors="coerce")
         delta = target - actual
 
-        post_spool = self.prime_log[
-            pd.to_numeric(self.prime_log[m["rpm"]], errors="coerce") > self.config.post_spool_rpm
-        ]
+        rpm_series = pd.to_numeric(self.prime_log[m["rpm"]], errors="coerce")
+        post_spool = self.prime_log[rpm_series > self.config.post_spool_rpm]
         if post_spool.empty:
             return
 
         post_delta = delta.loc[post_spool.index]
+        post_rpm = rpm_series.loc[post_spool.index]
 
-        if post_delta.max() > self.config.boost_delta_psi:
+        # Split deficit detection: mid-RPM deficit = real leak; high-RPM-only = normal taper
+        mid_rpm_mask = post_rpm < self.config.boost_taper_rpm_threshold
+        mid_max_deficit = post_delta[mid_rpm_mask].max() if mid_rpm_mask.any() else 0.0
+
+        if mid_max_deficit > self.config.boost_delta_psi:
             self._flags.add("boost_leak")
             self._alerts.append(Alert(
                 flag="boost_leak",
                 severity=AlertSeverity.MAJOR,
-                message=f"💨 Boost Leak: {round(post_delta.max(), 1)} PSI under target post-spool.",
+                message=f"💨 Boost Leak: {round(mid_max_deficit, 1)} PSI under target in the power band.",
                 beginner_message=(
                     "Boost is escaping somewhere — the engine asked for more pressure than it got "
                     "once the turbo was fully spooled. Check charge pipes and couplers for leaks."
+                ),
+            ))
+        elif post_delta.max() > self.config.boost_delta_psi:
+            # Deficit only at high RPM — normal power-band taper, not a leak
+            self._flags.add("boost_taper_high_rpm")
+            self._insights.append(Alert(
+                flag="boost_taper_high_rpm",
+                severity=AlertSeverity.INFO,
+                message=(
+                    f"💨 High-RPM Boost Taper: Boost fell "
+                    f"{round(post_delta.max(), 1)} PSI under target above "
+                    f"{int(self.config.boost_taper_rpm_threshold)} RPM — "
+                    f"normal power-band rolloff for this turbo."
+                ),
+                beginner_message=(
+                    "Boost dropped slightly short of target only at very high RPM — "
+                    "this is typical turbo behavior at the top of the power band, not a leak."
                 ),
             ))
 
@@ -460,6 +489,30 @@ class B58DiagnosticEngine:
                 severity=AlertSeverity.INFO,
                 message=f"🟡 IAT Rise: Intake temps rose {int(delta)}°F.",
                 beginner_message="Intake temps climbed during the pull — nothing critical, but worth monitoring.",
+            ))
+
+    def _check_charge_air_temp(self) -> None:
+        charge_air_col = self.map.get("charge_air")
+        if not charge_air_col or charge_air_col not in self.cols:
+            return
+        ca = pd.to_numeric(self.prime_log[charge_air_col], errors="coerce").dropna()
+        if ca.empty:
+            return
+        peak = float(ca.max())
+        if peak > self.config.charge_air_critical_f:
+            self._flags.add("charge_air_high")
+            self._alerts.append(Alert(
+                flag="charge_air_high",
+                severity=AlertSeverity.MAJOR,
+                message=(
+                    f"🌡️ Charge Air Temp: Peak {round(peak)}°F during WOT — "
+                    f"intercooler or charge pipe is overwhelmed."
+                ),
+                beginner_message=(
+                    f"The air entering the engine reached {round(peak)}°F after the intercooler — "
+                    "far hotter than it should be. Hot air is less dense, makes less power, "
+                    "and forces the ECU to pull timing to protect the engine."
+                ),
             ))
 
     def _check_wgdc(self) -> None:
@@ -611,6 +664,13 @@ class B58DiagnosticEngine:
         if len(rail_ps) < 3:
             return
 
+        # Trim trailing 10% to exclude pull-end pressure normalization (decel artifact)
+        trim = max(1, len(rail_ps) // 10)
+        rail_ps = rail_ps.iloc[:-trim]
+        time_ps = time_ps.iloc[:-trim]
+        if len(rail_ps) < 3:
+            return
+
         dt = time_ps.diff()
         d_rail = rail_ps.diff()
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -639,6 +699,12 @@ class B58DiagnosticEngine:
         if adv_col not in self.cols:
             return
         adv = pd.to_numeric(self.prime_log[adv_col], errors="coerce").dropna()
+        if len(adv) < 4:
+            return
+
+        # Trim trailing 10% to exclude pull-end timing map collapse (gear change, decel)
+        trim = max(1, len(adv) // 10)
+        adv = adv.iloc[:-trim]
         if len(adv) < 4:
             return
 
@@ -903,6 +969,41 @@ class B58DiagnosticEngine:
                 ),
             ))
 
+    def _correlate_charge_air_timing_c(self) -> None:
+        """
+        Pillar C: charge air temp (post-IC) rises within the pull AND timing retards.
+        More precise than the ambient-IAT correlation — confirms intercooler heat soak.
+        """
+        charge_air_col = self.map.get("charge_air")
+        adv_col = self.map["timing_adv"]
+        if not charge_air_col or charge_air_col not in self.cols or adv_col not in self.cols:
+            return
+
+        ca = pd.to_numeric(self.prime_log[charge_air_col], errors="coerce").dropna()
+        adv = pd.to_numeric(self.prime_log[adv_col], errors="coerce").dropna()
+        common = ca.index.intersection(adv.index)
+        if len(common) < 5:
+            return
+
+        ca_rise = float(ca[common].iloc[-1] - ca[common].iloc[0])
+        adv_change = float(adv[common].iloc[-1] - adv[common].iloc[0])
+
+        if ca_rise > self.config.charge_air_rise_min_f and adv_change < -self.config.iat_timing_retard_min_deg:
+            self._flags.add("charge_air_timing_c")
+            self._insights.append(Alert(
+                flag="charge_air_timing_c",
+                severity=AlertSeverity.INFO,
+                message=(
+                    f"🔗 Charge Air→Timing Correlation (Pillar C): Charge air rose "
+                    f"{round(ca_rise, 1)}°F and timing retarded {abs(round(adv_change, 1))}° "
+                    f"in the same pull — intercooler heat soak confirmed."
+                ),
+                beginner_message=(
+                    "The data shows a direct link: as the charge air got hotter, the ECU "
+                    "pulled timing back in response. This is intercooler heat soak, not a fuel or knock issue."
+                ),
+            ))
+
     def _correlate_boost_rail_c(self) -> None:
         """
         Pillar C: boost climbs post-spool while rail pressure drops — HPFP can't meet fuel demand.
@@ -958,8 +1059,10 @@ class B58DiagnosticEngine:
 
         throttle = pd.to_numeric(self.prime_log[m["throttle"]], errors="coerce")
         actual = pd.to_numeric(self.prime_log[m["afr_actual"]], errors="coerce")
+        rpm = pd.to_numeric(self.prime_log[m["rpm"]], errors="coerce")
 
-        high_throttle_mask = throttle > 95
+        # Require post-spool RPM to exclude spool-up lean samples
+        high_throttle_mask = (throttle > 95) & (rpm > self.config.post_spool_rpm)
         if not high_throttle_mask.any():
             return
 
@@ -1072,16 +1175,31 @@ class B58DiagnosticEngine:
             )
 
         # ── Boost / turbo ────────────────────────────────────────────────────
-        if "boost_leak" in f and "wgdc_saturation" in f:
+        if "boost_leak" in f and "wgdc_saturation" in f and "boost_mid_pull_drop_b" in f:
             self._diagnosis.append(
-                "🛠️ **Overworked Turbo:** A boost leak is forcing the wastegate fully closed to "
-                "compensate. This saturates the turbo and superheats intake air. "
+                "🛠️ **Boost Leak — Turbo Saturated:** A boost leak is confirmed by a power-band "
+                "deficit, mid-pull boost drop, and the wastegate fully closed compensating. "
                 "Check charge pipes and inlet couplers.\n\n"
-                "💬 **Plain English:** Boost is escaping somewhere so the turbo is working at 100% "
-                "just to compensate. Find and seal the leak — the turbo can't work any harder."
+                "💬 **Plain English:** Boost is escaping under pressure. The turbo is working at "
+                "100% just to compensate and still can't hit target. Find and seal the leak."
+            )
+        elif "boost_leak" in f and "wgdc_saturation" in f:
+            self._diagnosis.append(
+                "🛠️ **Boost Leak:** Power-band boost deficit with wastegate fully closed — "
+                "boost is escaping faster than the turbo can compensate. "
+                "Check charge pipes and inlet couplers.\n\n"
+                "💬 **Plain English:** The turbo is working at 100% and still can't reach target. "
+                "Something is leaking — check all charge pipes and couplers."
+            )
+        elif "boost_leak" in f:
+            self._diagnosis.append(
+                "⚠️ **Boost Deficit:** Boost is consistently under target in the power band. "
+                "Possible boost leak, wastegate issue, or turbo limitation.\n\n"
+                "💬 **Plain English:** The engine isn't getting the boost it's asking for. "
+                "Check charge pipes for leaks and confirm the wastegate is sealing properly."
             )
 
-        elif "boost_mid_pull_drop_b" in f and "boost_leak" not in f:
+        if "boost_mid_pull_drop_b" in f and "boost_leak" not in f:
             self._diagnosis.append(
                 "⚠️ **Mid-Pull Boost Anomaly (Pillar B):** Boost builds correctly then drops "
                 "unexpectedly after hitting peak — possible intermittent boost leak (only opens "
@@ -1093,7 +1211,8 @@ class B58DiagnosticEngine:
             )
 
         # ── Knock / timing ───────────────────────────────────────────────────
-        if ("knock" in f or "timing_pull" in f) and "iat_heat_soak" not in f:
+        thermal_flags = {"iat_heat_soak", "charge_air_high", "charge_air_timing_c"}
+        if ("knock" in f or "timing_pull" in f) and not (f & thermal_flags):
             if "timing_retard_event_b" in f:
                 self._diagnosis.append(
                     "🛠️ **Knock — Octane Limit (High Confidence, Pillars A+B):** "
@@ -1111,6 +1230,22 @@ class B58DiagnosticEngine:
                     "💬 **Plain English:** The car pulled timing because of fuel quality, not heat. "
                     "Better fuel or a safer tune map will fix this."
                 )
+
+        # ── Charge air / intercooler heat soak ───────────────────────────────
+        if "charge_air_high" in f:
+            n = sum(["charge_air_timing_c" in f, "iat_timing_correlation_c" in f])
+            conf = _confidence_label(n)
+            ca_alerts = [a for a in self._alerts if a.flag == "charge_air_high"]
+            peak_str = f" ({ca_alerts[0].message.split('Peak')[1].split(' during')[0].strip()})" if ca_alerts else ""
+            self._diagnosis.append(
+                f"🌡️ **Intercooler Heat Soak{conf}:** Charge air temps{peak_str} are far beyond "
+                f"what the intercooler can handle at this power level. This directly causes timing "
+                f"retard and power loss — the ECU protects the engine by pulling advance as temps climb. "
+                f"Allow more cool-down time between pulls; consider an intercooler or charge pipe upgrade.\n\n"
+                f"💬 **Plain English:** The air entering the engine is too hot after the intercooler. "
+                f"Hot air = less power and the computer pulls timing to prevent detonation. "
+                f"Cool down between runs. If it persists, the intercooler isn't big enough for this tune."
+            )
 
         # ── Heat soak ────────────────────────────────────────────────────────
         if "timing_degradation_heat_soak" in f:
@@ -1133,7 +1268,7 @@ class B58DiagnosticEngine:
                     "More cool-down time between pulls is the fix."
                 )
 
-        elif "iat_timing_correlation_c" in f and "iat_heat_soak" in f:
+        elif ("iat_timing_correlation_c" in f or "charge_air_timing_c" in f) and "iat_heat_soak" in f:
             self._diagnosis.append(
                 "🌡️ **Single-Pull Heat Soak (Confirmed, Pillar C):** IAT rose and timing retarded "
                 "in direct correlation within this pull — heat-soak feedback loop is active. "

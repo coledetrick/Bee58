@@ -524,3 +524,84 @@ def test_prime_pull_rpm_filter_falls_back_to_85pct_result():
     df["RPM (rpm)"] = 1500.0  # below min_pull_rpm=2000
     engine = B58DiagnosticEngine(df)
     assert len(engine.prime_log) == 20  # fallback: 85% result still covers all rows
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Charge air temperature detection
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_charge_air_high_flagged():
+    # 130°C = 266°F > 250°F default threshold — charge_air_high should fire
+    df = make_mhd_df(n=20, **{"Charge air temp. (*C)": np.full(20, 130.0)})
+    results = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in results.alerts}
+    assert "charge_air_high" in alert_flags
+
+
+def test_charge_air_timing_correlation_flagged():
+    # Charge air rises 40°C (72°F) > 30°F threshold; timing retards from 18° to 10° (-8° < -2°)
+    df = make_mhd_df(
+        n=20,
+        **{
+            "Charge air temp. (*C)": np.linspace(60.0, 100.0, 20),
+            "Timing Cyl. 1 (*)": np.linspace(18.0, 10.0, 20),
+        },
+    )
+    results = B58DiagnosticEngine(df).run_analysis()
+    insight_flags = {p.flag for p in results.performance_insights}
+    assert "charge_air_timing_c" in insight_flags
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# False-positive fixes
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_timing_retard_b_no_false_positive_from_pull_end():
+    # Timing drops only in the last 2 rows (post-pull decel/gear change artifact).
+    # With 10% trim (2 rows for n=20), the rolling window never sees the drop.
+    n = 20
+    timing = np.full(n, 15.0)
+    timing[-2:] = [5.0, 1.0]
+    df = make_mhd_df(n=n, **{"Timing Cyl. 1 (*)": timing})
+    results = B58DiagnosticEngine(df).run_analysis()
+    all_flags = {a.flag for a in results.alerts} | {p.flag for p in results.performance_insights}
+    assert "timing_retard_event_b" not in all_flags
+
+
+def test_boost_taper_high_rpm_not_flagged_as_leak():
+    # Boost deficit of 4 PSI only above 5500 RPM — should be boost_taper_high_rpm INFO, not boost_leak MAJOR
+    n = 30
+    rpm = np.linspace(3000.0, 7500.0, n)
+    boost_actual = np.where(rpm > 5500.0, 16.0, 20.0)
+    df = make_mhd_df(
+        n=n,
+        **{
+            "RPM (rpm)": rpm,
+            "Boost target (PSI)": np.full(n, 20.0),
+            "Boost (PSI)": boost_actual,
+        },
+    )
+    results = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in results.alerts}
+    insight_flags = {p.flag for p in results.performance_insights}
+    assert "boost_leak" not in alert_flags
+    assert "boost_taper_high_rpm" in insight_flags
+
+
+def test_wot_lean_excludes_spool_up_samples():
+    # AFR lean only during spool-up (RPM < 3500). Post-spool AFR is fine.
+    # throttle_afr_lean_c should NOT fire because the RPM filter excludes these samples.
+    n = 20
+    rpm = np.linspace(2000.0, 7000.0, n)
+    afr = np.where(rpm < 3500.0, 15.0, 11.5)
+    df = make_mhd_df(
+        n=n,
+        **{
+            "RPM (rpm)": rpm,
+            "AFR 1": afr,
+            "AFR Target": np.full(n, 11.5),
+        },
+    )
+    results = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in results.alerts}
+    assert "throttle_afr_lean_c" not in alert_flags

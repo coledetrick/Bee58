@@ -60,18 +60,6 @@ def main():
                 st.info(f"📊 {results.pull_count} WOT pulls detected. Analysis used the longest pull; "
                         "multi-pull comparison shown below.")
 
-            # --- THE FINAL VERDICT ---
-            st.subheader("🧠 Automated Tuner Diagnosis")
-            for diag in results.diagnosis:
-                if "✅" in diag:
-                    st.success(diag)
-                elif "🚨" in diag:
-                    st.error(diag)
-                else:
-                    st.warning(diag)
-
-            st.divider()
-
             # --- FINDINGS SECTIONS ---
             col_left, col_right = st.columns(2)
 
@@ -79,7 +67,7 @@ def main():
                 st.subheader("🚨 Critical Findings")
                 if results.alerts:
                     for a in results.alerts:
-                        st.error(a.message)  # fixed: was `a` (str); now Alert.message
+                        st.error(a.message)
                 else:
                     st.success("No hardware safety issues detected. Log looks clean!")
 
@@ -87,12 +75,32 @@ def main():
                 st.subheader("🛠️ Performance Insights")
                 if results.performance_insights:
                     for p in results.performance_insights:
-                        if "ℹ️" in p.message or "📈" in p.message:  # fixed: was `p` (str)
+                        if "ℹ️" in p.message or "📈" in p.message:
                             st.info(p.message)
                         else:
                             st.warning(p.message)
                 else:
                     st.info("No specific performance anomalies noted.")
+
+            st.divider()
+
+            # --- ROOT CAUSE ANALYSIS (synthesis — derived from findings above) ---
+            st.subheader("🔍 Root Cause Analysis")
+            st.caption("Interpretation based on the findings above.")
+            if results.diagnosis:
+                for diag in results.diagnosis:
+                    if "✅" in diag:
+                        st.success(diag)
+                    elif "🚨" in diag:
+                        st.error(diag)
+                    else:
+                        st.warning(diag)
+            elif not results.alerts:
+                st.success(
+                    "✅ **Clean Bill of Health:** Hardware is happy, fuel pressure is stable, "
+                    "and timing is clean. The car is running exactly as your tuner intended.\n\n"
+                    "💬 **Plain English:** Nothing wrong — no issues found across any check."
+                )
 
             # --- MULTI-PULL COMPARISON TABLE ---
             if results.pull_comparison:
@@ -131,6 +139,7 @@ def main():
                     "HPFP (Rail Pressure)":   m["rail"],
                     "LPFP":                   m.get("lpfp"),
                     "IAT":                    m.get("iat"),
+                    "Charge Air Temp":        m.get("charge_air"),
                 }
                 # Filter out None values and columns not in the log
                 available_cols = {k: v for k, v in available_cols.items() if v and v in plot_df.columns}

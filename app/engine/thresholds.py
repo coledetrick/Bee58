@@ -84,6 +84,14 @@ class ThresholdConfig:
     # Minimum timing retard (°, negative = retard) to confirm IAT/timing correlation
     iat_timing_retard_min_deg: float = 2.0
 
+    # ── Charge air temperature ───────────────────────────────────────────────────
+    # Post-intercooler temp above this at WOT = intercooler overwhelmed
+    charge_air_critical_f: float = 250.0
+    # Minimum intra-pull charge air rise (°F) to check timing correlation
+    charge_air_rise_min_f: float = 30.0
+    # Boost deficit only above this RPM = normal power-band taper, not a leak
+    boost_taper_rpm_threshold: float = 5500.0
+
 
 # Community stage presets — use as starting points, not gospel.
 # These will be validated against real log data as the dataset grows.
