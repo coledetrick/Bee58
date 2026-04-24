@@ -33,6 +33,8 @@ class B58DiagnosticEngine:
         self.cols = self.df.columns.tolist()
         self.config = config or ThresholdConfig()
         self.tune_platform = self._identify_tune_platform()
+        self._normalize_mhd_units()
+        self.cols = self.df.columns.tolist()
         self.map = self._normalize_col_names()
         self.engine_timing_cols = self._build_timing_cols()
         self.prime_log, self.prime_extracted_data = self._extract_wot_segments()
@@ -50,6 +52,32 @@ class B58DiagnosticEngine:
         if "Accel. Pedal[%]" in self.cols or "Engine speed[1/min]" in self.cols:
             return "BM3"
         raise ValueError("Unsupported platform. Please upload an MHD or BM3 CSV log.")
+
+    def _normalize_mhd_units(self) -> None:
+        """
+        MHD metric exports use Bar for pressure and °C for temperature.
+        Create PSI/°F aliases so the column map and thresholds work unchanged.
+        """
+        if self.tune_platform != "MHD":
+            return
+        BAR_TO_PSI = 14.5038
+        for src, dst in [
+            ("Boost (Bar)",                "Boost (PSI)"),
+            ("Boost target (Bar)",         "Boost target (PSI)"),
+            ("Rail pressure mean 1 (Bar)", "Rail pressure mean 1 (PSI)"),
+        ]:
+            if src in self.cols and dst not in self.cols:
+                self.df[dst] = pd.to_numeric(self.df[src], errors="coerce") * BAR_TO_PSI
+        if "IAT (*C)" in self.cols and "IAT (*F)" not in self.cols:
+            self.df["IAT (*F)"] = pd.to_numeric(self.df["IAT (*C)"], errors="coerce") * 9 / 5 + 32
+        for src, dst in [
+            ("STFT 1 (-)",    "STFT 1 (%)"),
+            ("WGDC 1 (%)",    "WGDC (%)"),
+            ("Lambda 1 (AFR)", "AFR 1"),
+            ("Timing Cyl. 1",  "Timing Cyl. 1 (*)"),
+        ]:
+            if src in self.cols and dst not in self.cols:
+                self.df[dst] = self.df[src]
 
     def _normalize_col_names(self) -> dict:
         if self.tune_platform == "MHD":
