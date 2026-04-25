@@ -303,6 +303,8 @@ class B58DiagnosticEngine:
         z = (wot_mean - stats["mean"]) / effective_std
 
         if z < -self.config.baseline_sigma:
+            _rail_rpm = pd.to_numeric(self.prime_log[self.map["rpm"]], errors="coerce").dropna()
+            _rail_range = (int(_rail_rpm.min()), int(_rail_rpm.max())) if not _rail_rpm.empty else None
             state.flags.add("rail_deviation_a")
             state.alerts.append(Alert(
                 flag="rail_deviation_a",
@@ -316,6 +318,7 @@ class B58DiagnosticEngine:
                     "Your fuel pump delivers noticeably less pressure during hard acceleration "
                     "than it does while cruising — a sign it may be struggling under load."
                 ),
+                rpm_range=_rail_range,
             ))
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -342,6 +345,8 @@ class B58DiagnosticEngine:
 
         if mid_max_deficit > self.config.boost_delta_psi:
             state.flags.add("boost_leak")
+            _mid_rpms = post_rpm[mid_rpm_mask].dropna()
+            _leak_range = (int(_mid_rpms.min()), int(_mid_rpms.max())) if not _mid_rpms.empty else None
             state.alerts.append(Alert(
                 flag="boost_leak",
                 severity=AlertSeverity.MAJOR,
@@ -350,10 +355,13 @@ class B58DiagnosticEngine:
                     "Boost is escaping somewhere — the engine asked for more pressure than it got "
                     "once the turbo was fully spooled. Check charge pipes and couplers for leaks."
                 ),
+                rpm_range=_leak_range,
             ))
         elif post_delta.max() > self.config.boost_delta_psi:
             # Deficit only at high RPM — normal power-band taper, not a leak
             state.flags.add("boost_taper_high_rpm")
+            _high_rpms = post_rpm[~mid_rpm_mask].dropna()
+            _taper_range = (int(_high_rpms.min()), int(_high_rpms.max())) if not _high_rpms.empty else None
             state.insights.append(Alert(
                 flag="boost_taper_high_rpm",
                 severity=AlertSeverity.INFO,
@@ -367,10 +375,14 @@ class B58DiagnosticEngine:
                     "Boost dropped slightly short of target only at very high RPM — "
                     "this is typical turbo behavior at the top of the power band, not a leak."
                 ),
+                rpm_range=_taper_range,
             ))
 
         if post_delta.min() < -self.config.boost_delta_psi:
             state.flags.add("overboost")
+            _ob_idx = post_delta.idxmin()
+            _ob_rpm = post_rpm.loc[_ob_idx]
+            _ob_range = (int(_ob_rpm), int(_ob_rpm)) if pd.notna(_ob_rpm) else None
             state.alerts.append(Alert(
                 flag="overboost",
                 severity=AlertSeverity.MAJOR,
@@ -379,6 +391,7 @@ class B58DiagnosticEngine:
                     "The turbo pushed more boost than the tune asked for — "
                     "this can stress engine components. Investigate boost solenoid or wastegate."
                 ),
+                rpm_range=_ob_range,
             ))
 
     def _check_ignition_contextual(self, state: _AnalysisState) -> None:
@@ -389,6 +402,8 @@ class B58DiagnosticEngine:
         if min_val < self.config.min_timing_correction:
             worst_row = timing.min(axis=1).idxmin()
             worst_cyl = "".join(filter(str.isdigit, timing.loc[worst_row].idxmin()))
+            _wr_rpm = pd.to_numeric(self.prime_log.loc[worst_row, self.map["rpm"]], errors="coerce")
+            _wr_range = (int(_wr_rpm), int(_wr_rpm)) if pd.notna(_wr_rpm) else None
             state.flags.add("timing_pull")
             state.alerts.append(Alert(
                 flag="timing_pull",
@@ -398,11 +413,15 @@ class B58DiagnosticEngine:
                     f"Cylinder {worst_cyl} had its timing pulled back significantly — "
                     "the ECU detected borderline knock and backed off to protect the engine."
                 ),
+                rpm_range=_wr_range,
             ))
 
     def _check_fuel_pressure(self, state: _AnalysisState) -> None:
         rail = pd.to_numeric(self.prime_log[self.map["rail"]], errors="coerce")
         if rail.min() < self.config.min_rail_psi:
+            _crash_idx = rail.idxmin()
+            _crash_rpm = pd.to_numeric(self.prime_log.loc[_crash_idx, self.map["rpm"]], errors="coerce")
+            _crash_range = (int(_crash_rpm), int(_crash_rpm)) if pd.notna(_crash_rpm) else None
             state.flags.add("hpfp_crash")
             state.alerts.append(Alert(
                 flag="hpfp_crash",
@@ -412,6 +431,7 @@ class B58DiagnosticEngine:
                     "Your high-pressure fuel pump dropped below a safe minimum — "
                     "the engine wasn't getting enough fuel under hard acceleration."
                 ),
+                rpm_range=_crash_range,
             ))
 
     def _check_lpfp(self, state: _AnalysisState) -> None:
@@ -420,6 +440,9 @@ class B58DiagnosticEngine:
             return
         lpfp = pd.to_numeric(self.prime_log[lpfp_col], errors="coerce")
         if lpfp.min() < self.config.min_lpfp_psi:
+            _starve_idx = lpfp.idxmin()
+            _starve_rpm = pd.to_numeric(self.prime_log.loc[_starve_idx, self.map["rpm"]], errors="coerce")
+            _starve_range = (int(_starve_rpm), int(_starve_rpm)) if pd.notna(_starve_rpm) else None
             state.flags.add("lpfp_starvation")
             state.alerts.append(Alert(
                 flag="lpfp_starvation",
@@ -429,11 +452,15 @@ class B58DiagnosticEngine:
                     "The in-tank fuel pump is starving — it can't supply enough fuel to the "
                     "high-pressure pump. This is the root cause of most HPFP problems."
                 ),
+                rpm_range=_starve_range,
             ))
 
     def _check_throttle_closures(self, state: _AnalysisState) -> None:
         throttle = pd.to_numeric(self.prime_log[self.map["throttle"]], errors="coerce")
         if throttle.min() < self.config.min_throttle_pct:
+            _tc_idx = throttle.idxmin()
+            _tc_rpm = pd.to_numeric(self.prime_log.loc[_tc_idx, self.map["rpm"]], errors="coerce")
+            _tc_range = (int(_tc_rpm), int(_tc_rpm)) if pd.notna(_tc_rpm) else None
             state.flags.add("throttle_closure")
             state.insights.append(Alert(
                 flag="throttle_closure",
@@ -443,6 +470,7 @@ class B58DiagnosticEngine:
                     "The computer briefly closed the throttle during the pull — "
                     "usually the transmission telling the engine to back off."
                 ),
+                rpm_range=_tc_range,
             ))
 
     def _check_fuel_trims(self, state: _AnalysisState) -> None:
@@ -451,6 +479,9 @@ class B58DiagnosticEngine:
             return
         stft = pd.to_numeric(self.prime_log[stft_col], errors="coerce")
         if stft.max() > self.config.max_stft_pct:
+            _stft_idx = stft.idxmax()
+            _stft_rpm = pd.to_numeric(self.prime_log.loc[_stft_idx, self.map["rpm"]], errors="coerce")
+            _stft_range = (int(_stft_rpm), int(_stft_rpm)) if pd.notna(_stft_rpm) else None
             state.flags.add("fuel_trims_high")
             state.alerts.append(Alert(
                 flag="fuel_trims_high",
@@ -460,6 +491,7 @@ class B58DiagnosticEngine:
                     "The ECU is adding a lot of extra fuel on the fly — "
                     "the base fueling map is running lean and the O2 sensor is compensating."
                 ),
+                rpm_range=_stft_range,
             ))
 
     def _check_iat_delta(self, state: _AnalysisState) -> None:
@@ -470,6 +502,8 @@ class B58DiagnosticEngine:
         if iat.empty:
             return
         delta = iat.iloc[-1] - iat.iloc[0]
+        _pull_rpm = pd.to_numeric(self.prime_log.loc[iat.index, self.map["rpm"]], errors="coerce").dropna()
+        _pull_range = (int(_pull_rpm.min()), int(_pull_rpm.max())) if not _pull_rpm.empty else None
         if delta > self.config.max_iat_delta_alert:
             state.flags.add("iat_heat_soak")
             state.alerts.append(Alert(
@@ -480,6 +514,7 @@ class B58DiagnosticEngine:
                     f"The air feeding the engine got {int(delta)}°F hotter during the pull — "
                     "denser cool air makes more power, so this hurts performance and triggers timing pull."
                 ),
+                rpm_range=_pull_range,
             ))
         elif delta > self.config.max_iat_delta_warn:
             state.flags.add("iat_rising")
@@ -488,6 +523,7 @@ class B58DiagnosticEngine:
                 severity=AlertSeverity.INFO,
                 message=f"IAT Rise: Intake temps rose {int(delta)}°F.",
                 beginner_message="Intake temps climbed during the pull — nothing critical, but worth monitoring.",
+                rpm_range=_pull_range,
             ))
 
     def _check_charge_air_temp(self, state: _AnalysisState) -> None:
@@ -499,6 +535,9 @@ class B58DiagnosticEngine:
             return
         peak = float(ca.max())
         if peak > self.config.charge_air_critical_f:
+            _ca_idx = ca.idxmax()
+            _ca_rpm = pd.to_numeric(self.prime_log.loc[_ca_idx, self.map["rpm"]], errors="coerce")
+            _ca_range = (int(_ca_rpm), int(_ca_rpm)) if pd.notna(_ca_rpm) else None
             state.charge_air_peak_f = peak
             state.flags.add("charge_air_high")
             state.alerts.append(Alert(
@@ -513,6 +552,7 @@ class B58DiagnosticEngine:
                     "far hotter than it should be. Hot air is less dense, makes less power, "
                     "and forces the ECU to pull timing to protect the engine."
                 ),
+                rpm_range=_ca_range,
             ))
 
     def _check_wgdc(self, state: _AnalysisState) -> None:
@@ -521,6 +561,11 @@ class B58DiagnosticEngine:
             return
         wgdc = pd.to_numeric(self.prime_log[wgdc_col], errors="coerce")
         if wgdc.max() > self.config.max_wgdc_pct:
+            _sat_rpms = pd.to_numeric(
+                self.prime_log.loc[wgdc[wgdc >= self.config.max_wgdc_pct].index, self.map["rpm"]],
+                errors="coerce",
+            ).dropna()
+            _sat_range = (int(_sat_rpms.min()), int(_sat_rpms.max())) if not _sat_rpms.empty else None
             state.flags.add("wgdc_saturation")
             state.insights.append(Alert(
                 flag="wgdc_saturation",
@@ -530,6 +575,7 @@ class B58DiagnosticEngine:
                     "The wastegate is fully closed — the turbo is working as hard as it physically can. "
                     "If boost is still short of target, there's a leak. If boost is on target, the turbo is maxed."
                 ),
+                rpm_range=_sat_range,
             ))
 
     def _check_knock(self, state: _AnalysisState) -> None:
@@ -538,6 +584,10 @@ class B58DiagnosticEngine:
             return
         knock = pd.to_numeric(self.prime_log[knock_col], errors="coerce")
         if knock.max() > 0:
+            _knock_rpms = pd.to_numeric(
+                self.prime_log.loc[knock[knock > 0].index, self.map["rpm"]], errors="coerce"
+            ).dropna()
+            _knock_range = (int(_knock_rpms.min()), int(_knock_rpms.max())) if not _knock_rpms.empty else None
             state.flags.add("knock")
             state.alerts.append(Alert(
                 flag="knock",
@@ -547,6 +597,7 @@ class B58DiagnosticEngine:
                     "The engine knocked — uncontrolled combustion that can destroy pistons. "
                     "Do not do another pull until you identify the cause."
                 ),
+                rpm_range=_knock_range,
             ))
 
     def _check_torque_limiters(self, state: _AnalysisState) -> None:
@@ -555,6 +606,10 @@ class B58DiagnosticEngine:
             return
         tq = pd.to_numeric(self.prime_log[tq_col], errors="coerce")
         if tq.max() > 0:
+            _tq_rpms = pd.to_numeric(
+                self.prime_log.loc[tq[tq > 0].index, self.map["rpm"]], errors="coerce"
+            ).dropna()
+            _tq_range = (int(_tq_rpms.min()), int(_tq_rpms.max())) if not _tq_rpms.empty else None
             state.flags.add("torque_limiter")
             state.insights.append(Alert(
                 flag="torque_limiter",
@@ -564,6 +619,7 @@ class B58DiagnosticEngine:
                     "The transmission's computer stepped in and capped engine torque — "
                     "it's protecting the gearbox from more torque than it's rated to handle."
                 ),
+                rpm_range=_tq_range,
             ))
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -578,6 +634,9 @@ class B58DiagnosticEngine:
         actual = pd.to_numeric(self.prime_log[m["afr_actual"]], errors="coerce")
         diff = actual - target
         if diff.max() > self.config.max_afr_delta:
+            _lean_idx = diff.idxmax()
+            _lean_rpm = pd.to_numeric(self.prime_log.loc[_lean_idx, m["rpm"]], errors="coerce")
+            _lean_range = (int(_lean_rpm), int(_lean_rpm)) if pd.notna(_lean_rpm) else None
             state.flags.add("dangerous_lean")
             state.alerts.append(Alert(
                 flag="dangerous_lean",
@@ -587,6 +646,7 @@ class B58DiagnosticEngine:
                     "The engine ran critically lean — way too little fuel for the air it consumed. "
                     "This can melt pistons. Do not pull again. Inspect injectors, pumps, and O2 sensor."
                 ),
+                rpm_range=_lean_range,
             ))
 
     def _check_load(self, state: _AnalysisState) -> None:
@@ -595,7 +655,11 @@ class B58DiagnosticEngine:
             return
         target = pd.to_numeric(self.prime_log[m["load_target"]], errors="coerce")
         actual = pd.to_numeric(self.prime_log[m["load_actual"]], errors="coerce")
-        if (target - actual).max() > self.config.max_load_miss_pct:
+        miss = target - actual
+        if miss.max() > self.config.max_load_miss_pct:
+            _miss_idx = miss.idxmax()
+            _miss_rpm = pd.to_numeric(self.prime_log.loc[_miss_idx, m["rpm"]], errors="coerce")
+            _miss_range = (int(_miss_rpm), int(_miss_rpm)) if pd.notna(_miss_rpm) else None
             state.flags.add("load_miss")
             state.insights.append(Alert(
                 flag="load_miss",
@@ -605,6 +669,7 @@ class B58DiagnosticEngine:
                     "The engine didn't reach the power level it was aiming for — "
                     "something is preventing it from filling the cylinders fully."
                 ),
+                rpm_range=_miss_range,
             ))
 
     def _check_timing_advance(self, state: _AnalysisState) -> None:
@@ -613,6 +678,8 @@ class B58DiagnosticEngine:
             return
         adv = pd.to_numeric(self.prime_log[adv_col], errors="coerce")
         if adv.max() < self.config.min_peak_timing_adv:
+            _adv_rpm = pd.to_numeric(self.prime_log[self.map["rpm"]], errors="coerce").dropna()
+            _adv_range = (int(_adv_rpm.min()), int(_adv_rpm.max())) if not _adv_rpm.empty else None
             state.flags.add("conservative_timing")
             state.insights.append(Alert(
                 flag="conservative_timing",
@@ -622,6 +689,7 @@ class B58DiagnosticEngine:
                     "The tune is running less ignition advance than a healthy map would — "
                     "likely because the fuel quality or heat isn't allowing more timing."
                 ),
+                rpm_range=_adv_range,
             ))
 
     def _calculate_performance_metrics(self, state: _AnalysisState) -> None:
@@ -678,6 +746,9 @@ class B58DiagnosticEngine:
 
         min_rate = rate.min()
         if pd.notna(min_rate) and min_rate < -self.config.rail_drop_rate_psi_per_s:
+            _rate_idx = rate.idxmin()
+            _rate_rpm = pd.to_numeric(self.prime_log.loc[_rate_idx, self.map["rpm"]], errors="coerce")
+            _rate_range = (int(_rate_rpm), int(_rate_rpm)) if pd.notna(_rate_rpm) else None
             state.flags.add("rail_drop_rate_b")
             state.alerts.append(Alert(
                 flag="rail_drop_rate_b",
@@ -691,6 +762,7 @@ class B58DiagnosticEngine:
                     "Fuel pressure fell off sharply during the pull — "
                     "the pump couldn't keep up with what the engine needed right when boost hit."
                 ),
+                rpm_range=_rate_range,
             ))
 
     def _check_timing_retard_events_b(self, state: _AnalysisState) -> None:
@@ -713,6 +785,9 @@ class B58DiagnosticEngine:
         max_retard = rolling_drop.max()
 
         if pd.notna(max_retard) and max_retard > self.config.timing_retard_event_deg:
+            _retard_idx = rolling_drop.idxmax()
+            _retard_rpm = pd.to_numeric(self.prime_log.loc[_retard_idx, self.map["rpm"]], errors="coerce")
+            _retard_range = (int(_retard_rpm), int(_retard_rpm)) if pd.notna(_retard_rpm) else None
             state.flags.add("timing_retard_event_b")
             state.alerts.append(Alert(
                 flag="timing_retard_event_b",
@@ -725,6 +800,7 @@ class B58DiagnosticEngine:
                     "The computer suddenly yanked timing back during the pull — "
                     "it sensed the engine was about to knock and backed off to protect it."
                 ),
+                rpm_range=_retard_range,
             ))
 
     def _check_afr_lean_swing_b(self, state: _AnalysisState) -> None:
@@ -748,6 +824,9 @@ class B58DiagnosticEngine:
 
         max_lean = mid_delta.max()
         if max_lean > self.config.afr_lean_swing_delta:
+            _afr_idx = mid_delta.idxmax()
+            _afr_rpm = pd.to_numeric(self.prime_log.loc[_afr_idx, self.map["rpm"]], errors="coerce")
+            _afr_range = (int(_afr_rpm), int(_afr_rpm)) if pd.notna(_afr_rpm) else None
             state.flags.add("afr_lean_swing_b")
             state.alerts.append(Alert(
                 flag="afr_lean_swing_b",
@@ -760,6 +839,7 @@ class B58DiagnosticEngine:
                     "The engine went lean in the middle of the pull — not at the start, not the end, "
                     "but right in the meat of it where the engine was working hardest."
                 ),
+                rpm_range=_afr_range,
             ))
 
     def _check_boost_mid_pull_drop_b(self, state: _AnalysisState) -> None:
@@ -787,6 +867,16 @@ class B58DiagnosticEngine:
         drop = peak_val - min_after
 
         if drop > self.config.boost_mid_pull_drop_psi:
+            _drop_end_idx = after_peak.idxmin()
+            rpm_series = pd.to_numeric(self.prime_log[m["rpm"]], errors="coerce")
+            _peak_rpm = rpm_series.loc[peak_idx]
+            _end_rpm = rpm_series.loc[_drop_end_idx]
+            if pd.notna(_peak_rpm) and pd.notna(_end_rpm):
+                _drop_range: Optional[Tuple[int, int]] = (
+                    int(min(_peak_rpm, _end_rpm)), int(max(_peak_rpm, _end_rpm))
+                )
+            else:
+                _drop_range = None
             state.flags.add("boost_mid_pull_drop_b")
             state.insights.append(Alert(
                 flag="boost_mid_pull_drop_b",
@@ -799,6 +889,7 @@ class B58DiagnosticEngine:
                     "Boost built up fine then dropped off mid-pull — "
                     "possible boost leak that only opens under pressure, wastegate creep, or compressor surge."
                 ),
+                rpm_range=_drop_range,
             ))
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -958,6 +1049,8 @@ class B58DiagnosticEngine:
             corr = iat[common].corr(adv[common])
 
         if pd.notna(corr) and corr < self.config.iat_timing_corr_threshold:
+            _iat_c_rpm = pd.to_numeric(self.prime_log.loc[common, self.map["rpm"]], errors="coerce").dropna()
+            _iat_c_range = (int(_iat_c_rpm.min()), int(_iat_c_rpm.max())) if not _iat_c_rpm.empty else None
             state.flags.add("iat_timing_correlation_c")
             state.insights.append(Alert(
                 flag="iat_timing_correlation_c",
@@ -971,6 +1064,7 @@ class B58DiagnosticEngine:
                     "The data shows a direct cause-and-effect: air got hotter, computer pulled timing. "
                     "This is heat soak — not a fuel or knock problem."
                 ),
+                rpm_range=_iat_c_range,
             ))
 
     def _correlate_charge_air_timing_c(self, state: _AnalysisState) -> None:
@@ -997,6 +1091,8 @@ class B58DiagnosticEngine:
             corr = ca[common].corr(adv[common])
 
         if pd.notna(corr) and corr < self.config.iat_timing_corr_threshold:
+            _ca_c_rpm = pd.to_numeric(self.prime_log.loc[common, self.map["rpm"]], errors="coerce").dropna()
+            _ca_c_range = (int(_ca_c_rpm.min()), int(_ca_c_rpm.max())) if not _ca_c_rpm.empty else None
             state.flags.add("charge_air_timing_c")
             state.insights.append(Alert(
                 flag="charge_air_timing_c",
@@ -1010,6 +1106,7 @@ class B58DiagnosticEngine:
                     "The data shows a direct link: as the charge air got hotter, the ECU "
                     "pulled timing back in response. This is intercooler heat soak, not a fuel or knock issue."
                 ),
+                rpm_range=_ca_c_range,
             ))
 
     def _correlate_boost_rail_c(self, state: _AnalysisState) -> None:
@@ -1042,6 +1139,8 @@ class B58DiagnosticEngine:
             and rail_drop > self.config.boost_rail_min_drop_psi
             and boost_rise > 2.0
         ):
+            _br_rpms = rpm[post_spool_mask].dropna()
+            _br_range = (int(_br_rpms.min()), int(_br_rpms.max())) if not _br_rpms.empty else None
             state.flags.add("boost_rail_divergence_c")
             state.alerts.append(Alert(
                 flag="boost_rail_divergence_c",
@@ -1055,6 +1154,7 @@ class B58DiagnosticEngine:
                     "As the turbo pushed harder, fuel pressure dropped — these two should track "
                     "together, but they went in opposite directions. The fuel pump is falling behind."
                 ),
+                rpm_range=_br_range,
             ))
 
     def _correlate_throttle_afr_c(self, state: _AnalysisState) -> None:
@@ -1080,6 +1180,8 @@ class B58DiagnosticEngine:
 
         if len(lean_wot) > len(afr_wot) * self.config.throttle_afr_lean_fraction:
             lean_pct = round(100 * len(lean_wot) / len(afr_wot))
+            _wot_rpms = rpm[high_throttle_mask].dropna()
+            _wot_range = (int(_wot_rpms.min()), int(_wot_rpms.max())) if not _wot_rpms.empty else None
             state.flags.add("throttle_afr_lean_c")
             state.alerts.append(Alert(
                 flag="throttle_afr_lean_c",
@@ -1093,6 +1195,7 @@ class B58DiagnosticEngine:
                     "Even with the pedal floored, the engine isn't getting enough fuel — "
                     "multiple sensor readings confirm it's lean at full throttle."
                 ),
+                rpm_range=_wot_range,
             ))
 
     # ──────────────────────────────────────────────────────────────────────────

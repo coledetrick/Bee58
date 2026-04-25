@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import pandas as pd
 from pydantic import BaseModel
 
@@ -54,6 +54,8 @@ class Alert(BaseModel):
     message: str
     # Plain-English explanation for non-technical users; None = omit from beginner view
     beginner_message: Optional[str] = None
+    # RPM range of the data window that triggered this finding; None for synthesis alerts
+    rpm_range: Optional[Tuple[int, int]] = None
 
 
 class PullSummary(BaseModel):
