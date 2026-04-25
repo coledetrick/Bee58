@@ -44,6 +44,7 @@ class ThresholdConfig:
     # Ignition timing
     min_timing_correction: float = -3.5  # below this = significant timing pull
     min_peak_timing_adv: float = 8.0     # advance at pull end below this = octane limited
+    iat_timing_corr_threshold: float = -0.5  # Pearson r below this = IAT driving timing retard
 
     # WOT detection
     wot_pedal_threshold: float = 85.0    # minimum pedal % to qualify a row as WOT
@@ -79,10 +80,8 @@ class ThresholdConfig:
     throttle_afr_lean_fraction: float = 0.10
     # AFR above this at WOT is considered lean for Pillar C check
     wot_lean_afr: float = 13.2
-    # Minimum IAT rise within a pull (°F) before checking timing correlation
+    # Minimum IAT range within a pull (°F) to attempt IAT/timing correlation
     iat_timing_rise_min_f: float = 8.0
-    # Minimum timing retard (°, negative = retard) to confirm IAT/timing correlation
-    iat_timing_retard_min_deg: float = 2.0
 
     # ── Charge air temperature ───────────────────────────────────────────────────
     # Post-intercooler temp above this at WOT = intercooler overwhelmed

@@ -247,7 +247,7 @@ def test_minor_alert_deducts_10_points():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Synthesis — reads flags not strings (2 tests)
+# Synthesis — reads flags not strings (9 tests)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def test_synthesis_cascading_fuel_failure():
@@ -264,6 +264,81 @@ def test_synthesis_hpfp_only_no_cascade():
     report = B58DiagnosticEngine(df).run_analysis()
     assert any("HPFP Limit Reached" in d.message for d in report.diagnosis)
     assert not any("Cascading" in d.message for d in report.diagnosis)
+
+
+def test_synthesis_marginal_fueling():
+    # AFR 1.3 lean of target — triggers Pillar B lean swing and Pillar C WOT lean,
+    # but NOT dangerous_lean (max_afr_delta raised to 3.0 to decouple the thresholds).
+    df = make_mhd_df()
+    df["AFR 1"] = np.full(20, 12.8)
+    config = ThresholdConfig(max_afr_delta=3.0, wot_lean_afr=12.0)
+    report = B58DiagnosticEngine(df, config=config).run_analysis()
+    assert any(d.flag == "dx_marginal_fueling" for d in report.diagnosis)
+
+
+def test_synthesis_boost_deficit():
+    # Boost 5 PSI below target, WGDC not saturated → boost_leak only, no wgdc_saturation
+    df = make_mhd_df()
+    df["Boost (PSI)"] = np.full(20, 15.0)
+    df["Boost target (PSI)"] = np.full(20, 20.0)
+    df["WGDC (%)"] = np.full(20, 70.0)
+    report = B58DiagnosticEngine(df).run_analysis()
+    assert any(d.flag == "dx_boost_deficit" for d in report.diagnosis)
+
+
+def test_synthesis_boost_leak_saturated():
+    # Boost spike then drop → mid-pull drop flag; deficit throughout → boost_leak;
+    # WGDC saturated → wgdc_saturation. All three together → dx_boost_leak_saturated.
+    df = make_mhd_df()
+    boost = np.full(20, 15.0)
+    boost[8] = 20.0  # brief peak then falls back — triggers mid-pull drop
+    df["Boost (PSI)"] = boost
+    df["Boost target (PSI)"] = np.full(20, 20.0)
+    df["WGDC (%)"] = np.full(20, 98.0)
+    report = B58DiagnosticEngine(df).run_analysis()
+    assert any(d.flag == "dx_boost_leak_saturated" for d in report.diagnosis)
+
+
+def test_synthesis_knock_octane_limit():
+    # Steady timing corrections at -4° (below -3.5 threshold) with no retard event
+    # and no thermal flags → dx_knock_octane_limit (lower-confidence branch)
+    df = make_mhd_df()
+    for col in ["Cyl1 Timing Cor (*)", "Cyl2 Timing Cor (*)", "Cyl3 Timing Cor (*)",
+                "Cyl4 Timing Cor (*)", "Cyl5 Timing Cor (*)", "Cyl6 Timing Cor (*)"]:
+        df[col] = np.full(20, -4.0)
+    report = B58DiagnosticEngine(df).run_analysis()
+    assert any(d.flag == "dx_knock_octane_limit" for d in report.diagnosis)
+
+
+def test_synthesis_tcu_intervention():
+    # Throttle dips below 93% AND torque limiter is active → dx_tcu_intervention
+    df = make_mhd_df()
+    df.loc[10, "Throttle Position (*)"] = 85.0
+    df["Torque Lim. active"] = np.where(np.arange(20) > 5, 1.0, 0.0)
+    report = B58DiagnosticEngine(df).run_analysis()
+    assert any(d.flag == "dx_tcu_intervention" for d in report.diagnosis)
+
+
+def test_synthesis_intercooler_recovery():
+    # Two pulls: IAT jumps 20°F between them, timing corrections stable (no degradation)
+    # → dx_intercooler_recovery (IAT jump flag without timing_degradation_heat_soak)
+    df = make_multi_pull_df([
+        {"IAT (*F)": np.full(20, 80.0)},
+        {"IAT (*F)": np.full(20, 100.0)},
+    ])
+    report = B58DiagnosticEngine(df).run_analysis()
+    assert any(d.flag == "dx_intercooler_recovery" for d in report.diagnosis)
+
+
+def test_synthesis_boost_degradation():
+    # Three pulls with peak boost declining by 2 PSI each time, no boost_leak or WGDC saturation
+    df = make_multi_pull_df([
+        {"Boost (PSI)": np.full(20, 22.0), "Boost target (PSI)": np.full(20, 20.0)},
+        {"Boost (PSI)": np.full(20, 20.0), "Boost target (PSI)": np.full(20, 20.0)},
+        {"Boost (PSI)": np.full(20, 18.0), "Boost target (PSI)": np.full(20, 20.0)},
+    ])
+    report = B58DiagnosticEngine(df).run_analysis()
+    assert any(d.flag == "dx_boost_degradation" for d in report.diagnosis)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -368,13 +443,14 @@ def test_pillar_b_afr_lean_swing_fires():
 
 
 def test_pillar_b_boost_mid_pull_drop_fires():
-    # Boost ramps to 22 PSI then collapses to 12 PSI — 10 PSI drop, well above 3 PSI threshold
+    # Boost ramps to 22 PSI then collapses to 12 PSI — 10 PSI drop, well above 3 PSI threshold.
+    # boost_mid_pull_drop_b is an insight (not an alert) — check performance_insights.
     df = make_mhd_df()
     n = 20
     boost = np.concatenate([np.linspace(10, 22, 12), np.full(8, 12.0)])
     df["Boost (PSI)"] = boost
     df["Boost target (PSI)"] = np.full(n, 22.0)  # match target so boost_leak doesn't fire
-    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
+    flags = {p.flag for p in B58DiagnosticEngine(df).run_analysis().performance_insights}
     assert "boost_mid_pull_drop_b" in flags
 
 

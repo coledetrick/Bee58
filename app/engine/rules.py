@@ -308,7 +308,7 @@ class B58DiagnosticEngine:
                 flag="rail_deviation_a",
                 severity=AlertSeverity.MINOR,
                 message=(
-                    f"⚡ Rail Pressure (Dynamic): WOT mean {round(wot_mean)} PSI is "
+                    f"Rail Pressure (Dynamic): WOT mean {round(wot_mean)} PSI is "
                     f"{abs(round(z, 1))}σ below this car's non-WOT baseline "
                     f"({round(stats['mean'])} PSI ± {round(stats['std'])} PSI)."
                 ),
@@ -345,7 +345,7 @@ class B58DiagnosticEngine:
             state.alerts.append(Alert(
                 flag="boost_leak",
                 severity=AlertSeverity.MAJOR,
-                message=f"💨 Boost Leak: {round(mid_max_deficit, 1)} PSI under target in the power band.",
+                message=f"Boost Leak: {round(mid_max_deficit, 1)} PSI under target in the power band.",
                 beginner_message=(
                     "Boost is escaping somewhere — the engine asked for more pressure than it got "
                     "once the turbo was fully spooled. Check charge pipes and couplers for leaks."
@@ -358,7 +358,7 @@ class B58DiagnosticEngine:
                 flag="boost_taper_high_rpm",
                 severity=AlertSeverity.INFO,
                 message=(
-                    f"💨 High-RPM Boost Taper: Boost fell "
+                    f"High-RPM Boost Taper: Boost fell"
                     f"{round(post_delta.max(), 1)} PSI under target above "
                     f"{int(self.config.boost_taper_rpm_threshold)} RPM — "
                     f"normal power-band rolloff for this turbo."
@@ -374,7 +374,7 @@ class B58DiagnosticEngine:
             state.alerts.append(Alert(
                 flag="overboost",
                 severity=AlertSeverity.MAJOR,
-                message=f"⚠️ Overboost: {abs(round(post_delta.min(), 1))} PSI over target detected.",
+                message=f"Overboost: {abs(round(post_delta.min(), 1))} PSI over target detected.",
                 beginner_message=(
                     "The turbo pushed more boost than the tune asked for — "
                     "this can stress engine components. Investigate boost solenoid or wastegate."
@@ -393,7 +393,7 @@ class B58DiagnosticEngine:
             state.alerts.append(Alert(
                 flag="timing_pull",
                 severity=AlertSeverity.MINOR,
-                message=f"🔥 Timing Pull: {round(min_val, 1)}° on Cyl {worst_cyl}.",
+                message=f"Timing Pull: {round(min_val, 1)}° on Cyl {worst_cyl}.",
                 beginner_message=(
                     f"Cylinder {worst_cyl} had its timing pulled back significantly — "
                     "the ECU detected borderline knock and backed off to protect the engine."
@@ -424,7 +424,7 @@ class B58DiagnosticEngine:
             state.alerts.append(Alert(
                 flag="lpfp_starvation",
                 severity=AlertSeverity.MAJOR,
-                message=f"📉 LPFP Starvation: Low-pressure pump dropped to {int(lpfp.min())} PSI.",
+                message=f"LPFP Starvation: Low-pressure pump dropped to {int(lpfp.min())} PSI.",
                 beginner_message=(
                     "The in-tank fuel pump is starving — it can't supply enough fuel to the "
                     "high-pressure pump. This is the root cause of most HPFP problems."
@@ -438,7 +438,7 @@ class B58DiagnosticEngine:
             state.insights.append(Alert(
                 flag="throttle_closure",
                 severity=AlertSeverity.INFO,
-                message=f"🟡 Throttle Closure: ECU limited throttle to {int(throttle.min())}%.",
+                message=f"Throttle Closure: ECU limited throttle to {int(throttle.min())}%.",
                 beginner_message=(
                     "The computer briefly closed the throttle during the pull — "
                     "usually the transmission telling the engine to back off."
@@ -475,7 +475,7 @@ class B58DiagnosticEngine:
             state.alerts.append(Alert(
                 flag="iat_heat_soak",
                 severity=AlertSeverity.MINOR,
-                message=f"🌡️ IAT Heat Soak: Intake temps rose {int(delta)}°F during the pull.",
+                message=f"IAT Heat Soak: Intake temps rose {int(delta)}°F during the pull.",
                 beginner_message=(
                     f"The air feeding the engine got {int(delta)}°F hotter during the pull — "
                     "denser cool air makes more power, so this hurts performance and triggers timing pull."
@@ -486,7 +486,7 @@ class B58DiagnosticEngine:
             state.insights.append(Alert(
                 flag="iat_rising",
                 severity=AlertSeverity.INFO,
-                message=f"🟡 IAT Rise: Intake temps rose {int(delta)}°F.",
+                message=f"IAT Rise: Intake temps rose {int(delta)}°F.",
                 beginner_message="Intake temps climbed during the pull — nothing critical, but worth monitoring.",
             ))
 
@@ -505,7 +505,7 @@ class B58DiagnosticEngine:
                 flag="charge_air_high",
                 severity=AlertSeverity.MAJOR,
                 message=(
-                    f"🌡️ Charge Air Temp: Peak {round(peak)}°F during WOT — "
+                    f"Charge Air Temp: Peak {round(peak)}°F during WOT — "
                     f"intercooler or charge pipe is overwhelmed."
                 ),
                 beginner_message=(
@@ -542,7 +542,7 @@ class B58DiagnosticEngine:
             state.alerts.append(Alert(
                 flag="knock",
                 severity=AlertSeverity.CRITICAL,
-                message="🚨 CRITICAL: Engine knock detected.",
+                message="CRITICAL: Engine knock detected.",
                 beginner_message=(
                     "The engine knocked — uncontrolled combustion that can destroy pistons. "
                     "Do not do another pull until you identify the cause."
@@ -559,7 +559,7 @@ class B58DiagnosticEngine:
             state.insights.append(Alert(
                 flag="torque_limiter",
                 severity=AlertSeverity.INFO,
-                message="⚙️ Torque Intervention: TCU/ECU torque limiter was active.",
+                message="Torque Intervention: TCU/ECU torque limiter was active.",
                 beginner_message=(
                     "The transmission's computer stepped in and capped engine torque — "
                     "it's protecting the gearbox from more torque than it's rated to handle."
@@ -582,7 +582,7 @@ class B58DiagnosticEngine:
             state.alerts.append(Alert(
                 flag="dangerous_lean",
                 severity=AlertSeverity.CRITICAL,
-                message=f"🚨 Dangerous Lean: AFR {round(diff.max(), 1)} points above target.",
+                message=f"Dangerous Lean: AFR {round(diff.max(), 1)} points above target.",
                 beginner_message=(
                     "The engine ran critically lean — way too little fuel for the air it consumed. "
                     "This can melt pistons. Do not pull again. Inspect injectors, pumps, and O2 sensor."
@@ -600,7 +600,7 @@ class B58DiagnosticEngine:
             state.insights.append(Alert(
                 flag="load_miss",
                 severity=AlertSeverity.INFO,
-                message="📉 Load Miss: Engine missed load target by >15%. Power is reduced.",
+                message="Load Miss: Engine missed load target by >15%. Power is reduced.",
                 beginner_message=(
                     "The engine didn't reach the power level it was aiming for — "
                     "something is preventing it from filling the cylinders fully."
@@ -637,7 +637,7 @@ class B58DiagnosticEngine:
             state.insights.append(Alert(
                 flag="accel_rate",
                 severity=AlertSeverity.INFO,
-                message=f"📈 Acceleration Rate: {accel} RPM/sec.",
+                message=f"Acceleration Rate: {accel} RPM/sec.",
             ))
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -683,7 +683,7 @@ class B58DiagnosticEngine:
                 flag="rail_drop_rate_b",
                 severity=AlertSeverity.MAJOR,
                 message=(
-                    f"📉 Rail Pressure Drop Rate (Pillar B): Fuel rail fell at "
+                    f"Rail Pressure Drop Rate (Pillar B): Fuel rail fell at "
                     f"{abs(round(min_rate))} PSI/s during WOT — "
                     f"exceeds safe rate ({self.config.rail_drop_rate_psi_per_s} PSI/s)."
                 ),
@@ -718,7 +718,7 @@ class B58DiagnosticEngine:
                 flag="timing_retard_event_b",
                 severity=AlertSeverity.MINOR,
                 message=(
-                    f"⚡ Timing Retard Event (Pillar B): {round(max_retard, 1)}° sudden retard "
+                    f"Timing Retard Event (Pillar B): {round(max_retard, 1)}° sudden retard "
                     f"detected mid-pull. ECU responded to borderline knock."
                 ),
                 beginner_message=(
@@ -753,7 +753,7 @@ class B58DiagnosticEngine:
                 flag="afr_lean_swing_b",
                 severity=AlertSeverity.MAJOR,
                 message=(
-                    f"⚡ AFR Lean Swing (Pillar B): AFR ran {round(max_lean, 2)} points lean "
+                    f"AFR Lean Swing (Pillar B): AFR ran {round(max_lean, 2)} points lean "
                     f"of target in the middle of the pull — fueling fell behind demand."
                 ),
                 beginner_message=(
@@ -788,11 +788,11 @@ class B58DiagnosticEngine:
 
         if drop > self.config.boost_mid_pull_drop_psi:
             state.flags.add("boost_mid_pull_drop_b")
-            state.alerts.append(Alert(
+            state.insights.append(Alert(
                 flag="boost_mid_pull_drop_b",
-                severity=AlertSeverity.MINOR,
+                severity=AlertSeverity.INFO,
                 message=(
-                    f"💨 Boost Mid-Pull Drop (Pillar B): Boost fell {round(drop, 1)} PSI from peak "
+                    f"Boost Mid-Pull Drop (Pillar B): Boost fell {round(drop, 1)} PSI from peak "
                     f"({round(peak_val, 1)} → {round(min_after, 1)} PSI) post-spool."
                 ),
                 beginner_message=(
@@ -851,7 +851,7 @@ class B58DiagnosticEngine:
                     flag="timing_degradation_heat_soak",
                     severity=AlertSeverity.MAJOR,
                     message=(
-                        f"🌡️ Heat Soak Progression: Timing pulled further each run "
+                        f"Heat Soak Progression: Timing pulled further each run "
                         f"({pull_values}). Classic heat soak signature."
                     ),
                     beginner_message=(
@@ -891,7 +891,7 @@ class B58DiagnosticEngine:
                 flag="iat_inter_pull_jump_b",
                 severity=AlertSeverity.INFO,
                 message=(
-                    f"🌡️ IAT Inter-Pull Jump (Pillar B): Intake temps jumped {round(max_jump)}°F "
+                    f"IAT Inter-Pull Jump (Pillar B): Intake temps jumped {round(max_jump)}°F "
                     f"between pulls — intercooler is not recovering between runs."
                 ),
                 beginner_message=(
@@ -921,7 +921,7 @@ class B58DiagnosticEngine:
                 flag="boost_degradation_b",
                 severity=AlertSeverity.INFO,
                 message=(
-                    f"📉 Boost Degradation (Pillar B): Peak boost declining each pull "
+                    f"Boost Degradation (Pillar B): Peak boost declining each pull "
                     f"({vals} PSI)."
                 ),
                 beginner_message=(
@@ -950,17 +950,21 @@ class B58DiagnosticEngine:
         if len(common) < 5:
             return
 
-        iat_rise = float(iat[common].iloc[-1] - iat[common].iloc[0])
-        adv_change = float(adv[common].iloc[-1] - adv[common].iloc[0])  # negative = retard
+        iat_range = float(iat[common].max() - iat[common].min())
+        if iat_range < self.config.iat_timing_rise_min_f:
+            return
 
-        if iat_rise > self.config.iat_timing_rise_min_f and adv_change < -self.config.iat_timing_retard_min_deg:
+        with np.errstate(invalid="ignore"):
+            corr = iat[common].corr(adv[common])
+
+        if pd.notna(corr) and corr < self.config.iat_timing_corr_threshold:
             state.flags.add("iat_timing_correlation_c")
             state.insights.append(Alert(
                 flag="iat_timing_correlation_c",
                 severity=AlertSeverity.INFO,
                 message=(
-                    f"🔗 IAT→Timing Correlation (Pillar C): IAT rose {round(iat_rise, 1)}°F and "
-                    f"timing retarded {abs(round(adv_change, 1))}° in the same pull — "
+                    f"IAT→Timing Correlation (Pillar C): IAT ranged {round(iat_range, 1)}°F "
+                    f"over the pull (r={round(corr, 2)} with timing advance) — "
                     f"heat-soak feedback loop confirmed."
                 ),
                 beginner_message=(
@@ -985,18 +989,22 @@ class B58DiagnosticEngine:
         if len(common) < 5:
             return
 
-        ca_rise = float(ca[common].iloc[-1] - ca[common].iloc[0])
-        adv_change = float(adv[common].iloc[-1] - adv[common].iloc[0])
+        ca_range = float(ca[common].max() - ca[common].min())
+        if ca_range < self.config.charge_air_rise_min_f:
+            return
 
-        if ca_rise > self.config.charge_air_rise_min_f and adv_change < -self.config.iat_timing_retard_min_deg:
+        with np.errstate(invalid="ignore"):
+            corr = ca[common].corr(adv[common])
+
+        if pd.notna(corr) and corr < self.config.iat_timing_corr_threshold:
             state.flags.add("charge_air_timing_c")
             state.insights.append(Alert(
                 flag="charge_air_timing_c",
                 severity=AlertSeverity.INFO,
                 message=(
-                    f"🔗 Charge Air→Timing Correlation (Pillar C): Charge air rose "
-                    f"{round(ca_rise, 1)}°F and timing retarded {abs(round(adv_change, 1))}° "
-                    f"in the same pull — intercooler heat soak confirmed."
+                    f"Charge Air→Timing Correlation (Pillar C): Charge air ranged "
+                    f"{round(ca_range, 1)}°F over the pull (r={round(corr, 2)} with timing advance) — "
+                    f"intercooler heat soak confirmed."
                 ),
                 beginner_message=(
                     "The data shows a direct link: as the charge air got hotter, the ECU "
@@ -1039,7 +1047,7 @@ class B58DiagnosticEngine:
                 flag="boost_rail_divergence_c",
                 severity=AlertSeverity.MAJOR,
                 message=(
-                    f"🔗 Boost↔Rail Divergence (Pillar C): As boost climbed, rail pressure fell "
+                    f"Boost↔Rail Divergence (Pillar C): As boost climbed, rail pressure fell "
                     f"{round(rail_drop)} PSI post-spool (r={round(corr, 2)}). "
                     f"HPFP is struggling to meet fuel demand under boost."
                 ),
@@ -1077,7 +1085,7 @@ class B58DiagnosticEngine:
                 flag="throttle_afr_lean_c",
                 severity=AlertSeverity.MAJOR,
                 message=(
-                    f"🔗 WOT Lean (Pillar C): {lean_pct}% of full-throttle samples show "
+                    f"WOT Lean (Pillar C): {lean_pct}% of full-throttle samples show "
                     f"AFR > {self.config.wot_lean_afr} (peak: {round(float(afr_wot.max()), 2)}). "
                     f"Fueling is not matching throttle demand."
                 ),

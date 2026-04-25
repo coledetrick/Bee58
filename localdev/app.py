@@ -58,14 +58,14 @@ def main():
 
             # Show pull count if multiple pulls were found
             if results.pull_count > 1:
-                st.info(f"📊 {results.pull_count} WOT pulls detected. Analysis used the longest pull; "
+                st.info(f"{results.pull_count} WOT pulls detected. Analysis used the longest pull; "
                         "multi-pull comparison shown below.")
 
             # --- FINDINGS SECTIONS ---
             col_left, col_right = st.columns(2)
 
             with col_left:
-                st.subheader("🚨 Critical Findings")
+                st.subheader("Critical Findings")
                 if results.alerts:
                     for a in results.alerts:
                         st.error(a.message)
@@ -73,7 +73,7 @@ def main():
                     st.success("No hardware safety issues detected. Log looks clean!")
 
             with col_right:
-                st.subheader("🛠️ Performance Insights")
+                st.subheader("Performance Insights")
                 if results.performance_insights:
                     for p in results.performance_insights:
                         if p.severity == AlertSeverity.INFO:
@@ -86,7 +86,7 @@ def main():
             st.divider()
 
             # --- ROOT CAUSE ANALYSIS (synthesis — derived from findings above) ---
-            st.subheader("🔍 Root Cause Analysis")
+            st.subheader("Root Cause Analysis")
             st.caption("Interpretation based on the findings above.")
             for d in results.diagnosis:
                 if d.severity == AlertSeverity.CRITICAL:
@@ -99,7 +99,7 @@ def main():
             # --- MULTI-PULL COMPARISON TABLE ---
             if results.pull_comparison:
                 st.divider()
-                st.subheader("🔁 Pull-to-Pull Comparison")
+                st.subheader("Pull-to-Pull Comparison")
                 pull_data = [
                     {
                         "Pull #": s.pull_number,
@@ -113,7 +113,7 @@ def main():
 
             # --- INTERACTIVE LOG CHART ---
             st.divider()
-            st.subheader("📈 Interactive Log Analysis")
+            st.subheader("Interactive Log Analysis")
 
             m = engine.map
             plot_df = engine.prime_log  # fixed: was engine.wot
