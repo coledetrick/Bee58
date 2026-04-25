@@ -1,7 +1,7 @@
 import sys
 import os
 
-# Make the project root importable so `app.engine` resolves correctly
+# Make the project root importable so `bee58.engine` resolves correctly
 # whether you run `streamlit run localdev/app.py` from the Bee58/ directory
 # or install the package with `pip install -e .` from Bee58/.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -11,8 +11,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from app.engine.rules import B58DiagnosticEngine
-from app.engine.models import AlertSeverity
+from bee58.engine.rules import B58DiagnosticEngine
+from bee58.engine.models import AlertSeverity
 
 st.set_page_config(page_title="B58 Specialized Diagnostic", layout="wide")
 

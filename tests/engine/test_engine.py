@@ -10,9 +10,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.engine.rules import B58DiagnosticEngine
-from app.engine.models import AlertSeverity
-from app.engine.thresholds import ThresholdConfig
+from bee58.engine.rules import B58DiagnosticEngine
+from bee58.engine.models import AlertSeverity
+from bee58.engine.thresholds import ThresholdConfig
 
 
 # ──────────────────────────────────────────────────────────────────────────────

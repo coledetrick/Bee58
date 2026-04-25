@@ -9,3 +9,5 @@ Provides-Extra: dev
 Requires-Dist: streamlit>=1.30; extra == "dev"
 Requires-Dist: plotly>=5.0; extra == "dev"
 Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: mypy>=1.0; extra == "dev"
+Requires-Dist: pandas-stubs>=2.0; extra == "dev"

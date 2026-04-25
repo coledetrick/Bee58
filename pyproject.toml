@@ -21,13 +21,12 @@ dev = [
     "pandas-stubs>=2.0",
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["app*"]
+[tool.setuptools]
+packages = ["bee58", "bee58.engine"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Makes the project root importable so `from app.engine.rules import ...` works
+# Makes the project root importable so `from bee58.engine import ...` works
 pythonpath = ["."]
 
 [tool.mypy]
