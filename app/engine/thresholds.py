@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class ThresholdConfig:
     """
     All numeric thresholds used by B58DiagnosticEngine.

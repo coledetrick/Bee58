@@ -146,7 +146,7 @@ def test_clean_log_status_is_healthy():
 
 def test_clean_log_diagnosis_is_clean_bill_of_health():
     report = B58DiagnosticEngine(make_mhd_df()).run_analysis()
-    assert any("Clean Bill of Health" in d for d in report.diagnosis)
+    assert any("Clean Bill of Health" in d.message for d in report.diagnosis)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -255,15 +255,15 @@ def test_synthesis_cascading_fuel_failure():
     df["Rail pressure mean 1 (PSI)"] = 1500.0   # hpfp_crash
     df["Fuel low pressure sensor (PSI)"] = 40.0  # lpfp_starvation
     report = B58DiagnosticEngine(df).run_analysis()
-    assert any("Cascading Fuel Failure" in d for d in report.diagnosis)
+    assert any("Cascading Fuel Failure" in d.message for d in report.diagnosis)
 
 
 def test_synthesis_hpfp_only_no_cascade():
     df = make_mhd_df()
     df["Rail pressure mean 1 (PSI)"] = 1500.0  # hpfp_crash only, LPFP is healthy
     report = B58DiagnosticEngine(df).run_analysis()
-    assert any("HPFP Limit Reached" in d for d in report.diagnosis)
-    assert not any("Cascading" in d for d in report.diagnosis)
+    assert any("HPFP Limit Reached" in d.message for d in report.diagnosis)
+    assert not any("Cascading" in d.message for d in report.diagnosis)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -442,7 +442,7 @@ def test_synthesis_hpfp_high_confidence_when_multi_pillar():
     df["Boost (PSI)"] = np.linspace(14.0, 22.0, n)
     df["Boost target (PSI)"] = np.linspace(14.0, 22.0, n)  # match actual to avoid boost_leak flag
     report = B58DiagnosticEngine(df).run_analysis()
-    assert any("high confidence" in d for d in report.diagnosis)
+    assert any("high confidence" in d.message for d in report.diagnosis)
 
 
 def test_synthesis_dangerous_lean_high_confidence_when_corroborated():
@@ -451,7 +451,7 @@ def test_synthesis_dangerous_lean_high_confidence_when_corroborated():
     afr = np.full(20, 13.5)  # 2.0 above 11.5 target — triggers dangerous_lean and lean_swing
     df["AFR 1"] = afr
     report = B58DiagnosticEngine(df).run_analysis()
-    assert any("High Confidence" in d for d in report.diagnosis)
+    assert any("High Confidence" in d.message for d in report.diagnosis)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

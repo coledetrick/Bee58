@@ -1,6 +1,23 @@
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, List
+import pandas as pd
 from pydantic import BaseModel
+
+
+@dataclass
+class _AnalysisState:
+    """
+    Mutable accumulator for a single run_analysis() call.
+    Created fresh each call — never stored on the engine instance.
+    """
+    flags: set = field(default_factory=set)
+    alerts: List["Alert"] = field(default_factory=list)
+    insights: List["Alert"] = field(default_factory=list)
+    diagnosis: List["Alert"] = field(default_factory=list)
+    sorted_pulls: List[pd.DataFrame] = field(default_factory=list)
+    baseline: dict = field(default_factory=dict)
+    charge_air_peak_f: Optional[float] = None
 
 
 class AlertSeverity(str, Enum):
@@ -53,6 +70,6 @@ class DiagnosticReport(BaseModel):
     status: str
     alerts: List[Alert]
     performance_insights: List[Alert]
-    diagnosis: List[str]
+    diagnosis: List["Alert"]
     pull_count: int
     pull_comparison: Optional[List[PullSummary]] = None

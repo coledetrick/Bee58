@@ -2,7 +2,7 @@ from typing import Optional, List, Tuple
 import pandas as pd
 import numpy as np
 
-from .models import Alert, AlertSeverity, DiagnosticReport, PullSummary, SEVERITY_DEDUCTIONS
+from .models import Alert, AlertSeverity, DiagnosticReport, PullSummary, SEVERITY_DEDUCTIONS, _AnalysisState
 from .thresholds import ThresholdConfig
 
 
@@ -26,6 +26,10 @@ class B58DiagnosticEngine:
     A single pillar finding is a flag. Cross-pillar corroboration is a diagnosis.
     Absolute thresholds (from ThresholdConfig) remain as a safety floor for
     conditions severe enough to warrant an alert regardless of baseline.
+
+    The engine instance is read-only after __init__. run_analysis() creates a
+    fresh _AnalysisState each call — safe to call multiple times or from concurrent
+    Lambda invocations on a warm instance.
     """
 
     def __init__(self, df: pd.DataFrame, config: Optional[ThresholdConfig] = None):
@@ -209,60 +213,56 @@ class B58DiagnosticEngine:
         if self.prime_log.empty:
             return None
 
-        self._flags: set = set()
-        self._alerts: List[Alert] = []
-        self._insights: List[Alert] = []
-        self._diagnosis: List[str] = []
-        self._sorted_pulls: List[pd.DataFrame] = []
+        state = _AnalysisState()
 
         # Pillar A: establish non-WOT baseline for this car
-        self._compute_baseline_stats()
+        self._compute_baseline_stats(state)
 
         # Absolute safety floor checks (always run regardless of baseline)
-        self._check_boost_with_spool_awareness()
-        self._check_ignition_contextual()
-        self._check_fuel_pressure()
-        self._check_lpfp()
-        self._check_throttle_closures()
-        self._check_fuel_trims()
-        self._check_iat_delta()
-        self._check_charge_air_temp()
-        self._check_wgdc()
-        self._check_knock()
-        self._check_torque_limiters()
+        self._check_boost_with_spool_awareness(state)
+        self._check_ignition_contextual(state)
+        self._check_fuel_pressure(state)
+        self._check_lpfp(state)
+        self._check_throttle_closures(state)
+        self._check_fuel_trims(state)
+        self._check_iat_delta(state)
+        self._check_charge_air_temp(state)
+        self._check_wgdc(state)
+        self._check_knock(state)
+        self._check_torque_limiters(state)
 
         # Pillar A: dynamic deviation from car's own baseline
-        self._check_rail_deviation_a()
+        self._check_rail_deviation_a(state)
 
         # Pillar B: rate-of-change / single-pull delta detection
-        self._check_rail_drop_rate_b()
-        self._check_timing_retard_events_b()
-        self._check_afr_lean_swing_b()
-        self._check_boost_mid_pull_drop_b()
+        self._check_rail_drop_rate_b(state)
+        self._check_timing_retard_events_b(state)
+        self._check_afr_lean_swing_b(state)
+        self._check_boost_mid_pull_drop_b(state)
 
         # Tuning quality checks
-        self._check_afr()
-        self._check_load()
-        self._check_timing_advance()
-        self._calculate_performance_metrics()
+        self._check_afr(state)
+        self._check_load(state)
+        self._check_timing_advance(state)
+        self._calculate_performance_metrics(state)
 
         # Multi-pull comparison (also runs Pillar B inter-pull checks internally)
-        pull_comparison = self._compare_pulls()
+        pull_comparison = self._compare_pulls(state)
 
         # Pillar C: cross-parameter physical relationships
-        self._correlate_iat_timing_c()
-        self._correlate_charge_air_timing_c()
-        self._correlate_boost_rail_c()
-        self._correlate_throttle_afr_c()
+        self._correlate_iat_timing_c(state)
+        self._correlate_charge_air_timing_c(state)
+        self._correlate_boost_rail_c(state)
+        self._correlate_throttle_afr_c(state)
 
-        self._synthesize_diagnosis()
+        self._synthesize_diagnosis(state)
 
         return DiagnosticReport(
-            score=self._calculate_score(),
-            status="Needs Attention" if self._alerts else "Healthy",
-            alerts=self._alerts,
-            performance_insights=self._insights,
-            diagnosis=self._diagnosis,
+            score=self._calculate_score(state),
+            status="Needs Attention" if state.alerts else "Healthy",
+            alerts=state.alerts,
+            performance_insights=state.insights,
+            diagnosis=state.diagnosis,
             pull_count=len(self.prime_extracted_data),
             pull_comparison=pull_comparison,
         )
@@ -271,14 +271,13 @@ class B58DiagnosticEngine:
     # Pillar A — intra-log statistical normalization
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _compute_baseline_stats(self) -> None:
+    def _compute_baseline_stats(self, state: _AnalysisState) -> None:
         """
         Build per-parameter baseline (mean, std) from non-WOT operating periods.
         Pillar A checks skip silently when baseline is absent (track-only logs).
         """
         pedal_col = self.map["pedal"]
         non_wot = self.df[pd.to_numeric(self.df[pedal_col], errors="coerce") < 20].copy()
-        self._baseline: dict = {}
 
         if len(non_wot) < self.config.baseline_min_rows:
             return
@@ -288,13 +287,13 @@ class B58DiagnosticEngine:
             if col and col in self.cols:
                 series = pd.to_numeric(non_wot[col], errors="coerce").dropna()
                 if len(series) >= self.config.baseline_min_rows:
-                    self._baseline[key] = {"mean": float(series.mean()), "std": float(series.std())}
+                    state.baseline[key] = {"mean": float(series.mean()), "std": float(series.std())}
 
-    def _check_rail_deviation_a(self) -> None:
+    def _check_rail_deviation_a(self, state: _AnalysisState) -> None:
         """Pillar A: rail pressure during WOT deviates significantly from this car's cruise baseline."""
-        if "rail" not in self._baseline:
+        if "rail" not in state.baseline:
             return
-        stats = self._baseline["rail"]
+        stats = state.baseline["rail"]
         # Floor std at 50 PSI so a constant baseline still produces a meaningful z-score;
         # real logs have natural variation that keeps this floor inactive.
         effective_std = max(stats["std"], 50.0)
@@ -304,8 +303,8 @@ class B58DiagnosticEngine:
         z = (wot_mean - stats["mean"]) / effective_std
 
         if z < -self.config.baseline_sigma:
-            self._flags.add("rail_deviation_a")
-            self._alerts.append(Alert(
+            state.flags.add("rail_deviation_a")
+            state.alerts.append(Alert(
                 flag="rail_deviation_a",
                 severity=AlertSeverity.MINOR,
                 message=(
@@ -323,7 +322,7 @@ class B58DiagnosticEngine:
     # Absolute safety floor checks
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _check_boost_with_spool_awareness(self) -> None:
+    def _check_boost_with_spool_awareness(self, state: _AnalysisState) -> None:
         m = self.map
         target = pd.to_numeric(self.prime_log[m["boost_target"]], errors="coerce")
         actual = pd.to_numeric(self.prime_log[m["boost_actual"]], errors="coerce")
@@ -342,8 +341,8 @@ class B58DiagnosticEngine:
         mid_max_deficit = post_delta[mid_rpm_mask].max() if mid_rpm_mask.any() else 0.0
 
         if mid_max_deficit > self.config.boost_delta_psi:
-            self._flags.add("boost_leak")
-            self._alerts.append(Alert(
+            state.flags.add("boost_leak")
+            state.alerts.append(Alert(
                 flag="boost_leak",
                 severity=AlertSeverity.MAJOR,
                 message=f"💨 Boost Leak: {round(mid_max_deficit, 1)} PSI under target in the power band.",
@@ -354,8 +353,8 @@ class B58DiagnosticEngine:
             ))
         elif post_delta.max() > self.config.boost_delta_psi:
             # Deficit only at high RPM — normal power-band taper, not a leak
-            self._flags.add("boost_taper_high_rpm")
-            self._insights.append(Alert(
+            state.flags.add("boost_taper_high_rpm")
+            state.insights.append(Alert(
                 flag="boost_taper_high_rpm",
                 severity=AlertSeverity.INFO,
                 message=(
@@ -371,8 +370,8 @@ class B58DiagnosticEngine:
             ))
 
         if post_delta.min() < -self.config.boost_delta_psi:
-            self._flags.add("overboost")
-            self._alerts.append(Alert(
+            state.flags.add("overboost")
+            state.alerts.append(Alert(
                 flag="overboost",
                 severity=AlertSeverity.MAJOR,
                 message=f"⚠️ Overboost: {abs(round(post_delta.min(), 1))} PSI over target detected.",
@@ -382,7 +381,7 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_ignition_contextual(self) -> None:
+    def _check_ignition_contextual(self, state: _AnalysisState) -> None:
         if not self.engine_timing_cols:
             return
         timing = self.prime_log[self.engine_timing_cols].apply(pd.to_numeric, errors="coerce")
@@ -390,8 +389,8 @@ class B58DiagnosticEngine:
         if min_val < self.config.min_timing_correction:
             worst_row = timing.min(axis=1).idxmin()
             worst_cyl = "".join(filter(str.isdigit, timing.loc[worst_row].idxmin()))
-            self._flags.add("timing_pull")
-            self._alerts.append(Alert(
+            state.flags.add("timing_pull")
+            state.alerts.append(Alert(
                 flag="timing_pull",
                 severity=AlertSeverity.MINOR,
                 message=f"🔥 Timing Pull: {round(min_val, 1)}° on Cyl {worst_cyl}.",
@@ -401,11 +400,11 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_fuel_pressure(self) -> None:
+    def _check_fuel_pressure(self, state: _AnalysisState) -> None:
         rail = pd.to_numeric(self.prime_log[self.map["rail"]], errors="coerce")
         if rail.min() < self.config.min_rail_psi:
-            self._flags.add("hpfp_crash")
-            self._alerts.append(Alert(
+            state.flags.add("hpfp_crash")
+            state.alerts.append(Alert(
                 flag="hpfp_crash",
                 severity=AlertSeverity.MAJOR,
                 message=f"🔴 HPFP Crash: Fuel pressure dipped to {int(rail.min())} PSI.",
@@ -415,14 +414,14 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_lpfp(self) -> None:
+    def _check_lpfp(self, state: _AnalysisState) -> None:
         lpfp_col = self.map["lpfp"]
         if lpfp_col not in self.cols:
             return
         lpfp = pd.to_numeric(self.prime_log[lpfp_col], errors="coerce")
         if lpfp.min() < self.config.min_lpfp_psi:
-            self._flags.add("lpfp_starvation")
-            self._alerts.append(Alert(
+            state.flags.add("lpfp_starvation")
+            state.alerts.append(Alert(
                 flag="lpfp_starvation",
                 severity=AlertSeverity.MAJOR,
                 message=f"📉 LPFP Starvation: Low-pressure pump dropped to {int(lpfp.min())} PSI.",
@@ -432,13 +431,13 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_throttle_closures(self) -> None:
+    def _check_throttle_closures(self, state: _AnalysisState) -> None:
         throttle = pd.to_numeric(self.prime_log[self.map["throttle"]], errors="coerce")
         if throttle.min() < self.config.min_throttle_pct:
-            self._flags.add("throttle_closure")
-            self._insights.append(Alert(
+            state.flags.add("throttle_closure")
+            state.insights.append(Alert(
                 flag="throttle_closure",
-                severity=AlertSeverity.MINOR,
+                severity=AlertSeverity.INFO,
                 message=f"🟡 Throttle Closure: ECU limited throttle to {int(throttle.min())}%.",
                 beginner_message=(
                     "The computer briefly closed the throttle during the pull — "
@@ -446,14 +445,14 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_fuel_trims(self) -> None:
+    def _check_fuel_trims(self, state: _AnalysisState) -> None:
         stft_col = self.map["stft"]
         if stft_col not in self.cols:
             return
         stft = pd.to_numeric(self.prime_log[stft_col], errors="coerce")
         if stft.max() > self.config.max_stft_pct:
-            self._flags.add("fuel_trims_high")
-            self._alerts.append(Alert(
+            state.flags.add("fuel_trims_high")
+            state.alerts.append(Alert(
                 flag="fuel_trims_high",
                 severity=AlertSeverity.MINOR,
                 message=f"⛽ Fuel Trims: STFT maxed at +{int(stft.max())}%.",
@@ -463,7 +462,7 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_iat_delta(self) -> None:
+    def _check_iat_delta(self, state: _AnalysisState) -> None:
         iat_col = self.map["iat"]
         if iat_col not in self.cols:
             return
@@ -472,8 +471,8 @@ class B58DiagnosticEngine:
             return
         delta = iat.iloc[-1] - iat.iloc[0]
         if delta > self.config.max_iat_delta_alert:
-            self._flags.add("iat_heat_soak")
-            self._alerts.append(Alert(
+            state.flags.add("iat_heat_soak")
+            state.alerts.append(Alert(
                 flag="iat_heat_soak",
                 severity=AlertSeverity.MINOR,
                 message=f"🌡️ IAT Heat Soak: Intake temps rose {int(delta)}°F during the pull.",
@@ -483,15 +482,15 @@ class B58DiagnosticEngine:
                 ),
             ))
         elif delta > self.config.max_iat_delta_warn:
-            self._flags.add("iat_rising")
-            self._insights.append(Alert(
+            state.flags.add("iat_rising")
+            state.insights.append(Alert(
                 flag="iat_rising",
                 severity=AlertSeverity.INFO,
                 message=f"🟡 IAT Rise: Intake temps rose {int(delta)}°F.",
                 beginner_message="Intake temps climbed during the pull — nothing critical, but worth monitoring.",
             ))
 
-    def _check_charge_air_temp(self) -> None:
+    def _check_charge_air_temp(self, state: _AnalysisState) -> None:
         charge_air_col = self.map.get("charge_air")
         if not charge_air_col or charge_air_col not in self.cols:
             return
@@ -500,8 +499,9 @@ class B58DiagnosticEngine:
             return
         peak = float(ca.max())
         if peak > self.config.charge_air_critical_f:
-            self._flags.add("charge_air_high")
-            self._alerts.append(Alert(
+            state.charge_air_peak_f = peak
+            state.flags.add("charge_air_high")
+            state.alerts.append(Alert(
                 flag="charge_air_high",
                 severity=AlertSeverity.MAJOR,
                 message=(
@@ -515,14 +515,14 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_wgdc(self) -> None:
+    def _check_wgdc(self, state: _AnalysisState) -> None:
         wgdc_col = self.map["wgdc"]
         if wgdc_col not in self.cols:
             return
         wgdc = pd.to_numeric(self.prime_log[wgdc_col], errors="coerce")
         if wgdc.max() > self.config.max_wgdc_pct:
-            self._flags.add("wgdc_saturation")
-            self._insights.append(Alert(
+            state.flags.add("wgdc_saturation")
+            state.insights.append(Alert(
                 flag="wgdc_saturation",
                 severity=AlertSeverity.INFO,
                 message="🐌 Turbo Headroom: WGDC at 100%. Turbo is at its physical limit.",
@@ -532,14 +532,14 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_knock(self) -> None:
+    def _check_knock(self, state: _AnalysisState) -> None:
         knock_col = self.map["knock"]
         if knock_col not in self.cols:
             return
         knock = pd.to_numeric(self.prime_log[knock_col], errors="coerce")
         if knock.max() > 0:
-            self._flags.add("knock")
-            self._alerts.append(Alert(
+            state.flags.add("knock")
+            state.alerts.append(Alert(
                 flag="knock",
                 severity=AlertSeverity.CRITICAL,
                 message="🚨 CRITICAL: Engine knock detected.",
@@ -549,14 +549,14 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_torque_limiters(self) -> None:
+    def _check_torque_limiters(self, state: _AnalysisState) -> None:
         tq_col = self.map["tq_lim"]
         if tq_col not in self.cols:
             return
         tq = pd.to_numeric(self.prime_log[tq_col], errors="coerce")
         if tq.max() > 0:
-            self._flags.add("torque_limiter")
-            self._insights.append(Alert(
+            state.flags.add("torque_limiter")
+            state.insights.append(Alert(
                 flag="torque_limiter",
                 severity=AlertSeverity.INFO,
                 message="⚙️ Torque Intervention: TCU/ECU torque limiter was active.",
@@ -570,7 +570,7 @@ class B58DiagnosticEngine:
     # Tuning quality checks
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _check_afr(self) -> None:
+    def _check_afr(self, state: _AnalysisState) -> None:
         m = self.map
         if m["afr_target"] not in self.cols or m["afr_actual"] not in self.cols:
             return
@@ -578,8 +578,8 @@ class B58DiagnosticEngine:
         actual = pd.to_numeric(self.prime_log[m["afr_actual"]], errors="coerce")
         diff = actual - target
         if diff.max() > self.config.max_afr_delta:
-            self._flags.add("dangerous_lean")
-            self._alerts.append(Alert(
+            state.flags.add("dangerous_lean")
+            state.alerts.append(Alert(
                 flag="dangerous_lean",
                 severity=AlertSeverity.CRITICAL,
                 message=f"🚨 Dangerous Lean: AFR {round(diff.max(), 1)} points above target.",
@@ -589,17 +589,17 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_load(self) -> None:
+    def _check_load(self, state: _AnalysisState) -> None:
         m = self.map
         if m["load_target"] not in self.cols or m["load_actual"] not in self.cols:
             return
         target = pd.to_numeric(self.prime_log[m["load_target"]], errors="coerce")
         actual = pd.to_numeric(self.prime_log[m["load_actual"]], errors="coerce")
         if (target - actual).max() > self.config.max_load_miss_pct:
-            self._flags.add("load_miss")
-            self._insights.append(Alert(
+            state.flags.add("load_miss")
+            state.insights.append(Alert(
                 flag="load_miss",
-                severity=AlertSeverity.MINOR,
+                severity=AlertSeverity.INFO,
                 message="📉 Load Miss: Engine missed load target by >15%. Power is reduced.",
                 beginner_message=(
                     "The engine didn't reach the power level it was aiming for — "
@@ -607,24 +607,24 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_timing_advance(self) -> None:
+    def _check_timing_advance(self, state: _AnalysisState) -> None:
         adv_col = self.map["timing_adv"]
         if adv_col not in self.cols:
             return
         adv = pd.to_numeric(self.prime_log[adv_col], errors="coerce")
-        if adv.iloc[-1] < self.config.min_peak_timing_adv:
-            self._flags.add("conservative_timing")
-            self._insights.append(Alert(
+        if adv.max() < self.config.min_peak_timing_adv:
+            state.flags.add("conservative_timing")
+            state.insights.append(Alert(
                 flag="conservative_timing",
                 severity=AlertSeverity.INFO,
-                message=f"🐢 Conservative Timing: Peak advance {round(adv.iloc[-1], 1)}°. Map may be octane limited.",
+                message=f"🐢 Conservative Timing: Peak advance {round(adv.max(), 1)}°. Map may be octane limited.",
                 beginner_message=(
                     "The tune is running less ignition advance than a healthy map would — "
                     "likely because the fuel quality or heat isn't allowing more timing."
                 ),
             ))
 
-    def _calculate_performance_metrics(self) -> None:
+    def _calculate_performance_metrics(self, state: _AnalysisState) -> None:
         m = self.map
         time_col = m["time"]
         if time_col not in self.prime_log.columns:
@@ -634,7 +634,7 @@ class B58DiagnosticEngine:
         duration = time_s.iloc[-1] - time_s.iloc[0]
         if pd.notna(duration) and duration > 0:
             accel = int((rpm.iloc[-1] - rpm.iloc[0]) / duration)
-            self._insights.append(Alert(
+            state.insights.append(Alert(
                 flag="accel_rate",
                 severity=AlertSeverity.INFO,
                 message=f"📈 Acceleration Rate: {accel} RPM/sec.",
@@ -644,7 +644,7 @@ class B58DiagnosticEngine:
     # Pillar B — rate-of-change / single-pull delta detection
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _check_rail_drop_rate_b(self) -> None:
+    def _check_rail_drop_rate_b(self, state: _AnalysisState) -> None:
         """Pillar B: rail pressure drops at excessive rate during WOT ramp (pump struggling)."""
         m = self.map
         time_col = m["time"]
@@ -678,8 +678,8 @@ class B58DiagnosticEngine:
 
         min_rate = rate.min()
         if pd.notna(min_rate) and min_rate < -self.config.rail_drop_rate_psi_per_s:
-            self._flags.add("rail_drop_rate_b")
-            self._alerts.append(Alert(
+            state.flags.add("rail_drop_rate_b")
+            state.alerts.append(Alert(
                 flag="rail_drop_rate_b",
                 severity=AlertSeverity.MAJOR,
                 message=(
@@ -693,7 +693,7 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_timing_retard_events_b(self) -> None:
+    def _check_timing_retard_events_b(self, state: _AnalysisState) -> None:
         """Pillar B: sudden timing retard mid-pull — knock proxy even without a knock flag."""
         adv_col = self.map["timing_adv"]
         if adv_col not in self.cols:
@@ -713,8 +713,8 @@ class B58DiagnosticEngine:
         max_retard = rolling_drop.max()
 
         if pd.notna(max_retard) and max_retard > self.config.timing_retard_event_deg:
-            self._flags.add("timing_retard_event_b")
-            self._alerts.append(Alert(
+            state.flags.add("timing_retard_event_b")
+            state.alerts.append(Alert(
                 flag="timing_retard_event_b",
                 severity=AlertSeverity.MINOR,
                 message=(
@@ -727,7 +727,7 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_afr_lean_swing_b(self) -> None:
+    def _check_afr_lean_swing_b(self, state: _AnalysisState) -> None:
         """Pillar B: AFR swings lean mid-pull — fueling system can't sustain demand."""
         m = self.map
         if m["afr_actual"] not in self.cols or m["afr_target"] not in self.cols:
@@ -748,8 +748,8 @@ class B58DiagnosticEngine:
 
         max_lean = mid_delta.max()
         if max_lean > self.config.afr_lean_swing_delta:
-            self._flags.add("afr_lean_swing_b")
-            self._alerts.append(Alert(
+            state.flags.add("afr_lean_swing_b")
+            state.alerts.append(Alert(
                 flag="afr_lean_swing_b",
                 severity=AlertSeverity.MAJOR,
                 message=(
@@ -762,7 +762,7 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_boost_mid_pull_drop_b(self) -> None:
+    def _check_boost_mid_pull_drop_b(self, state: _AnalysisState) -> None:
         """Pillar B: boost drops from peak mid-pull after hitting target (leak, wastegate, surge)."""
         m = self.map
         rpm = pd.to_numeric(self.prime_log[m["rpm"]], errors="coerce")
@@ -787,8 +787,8 @@ class B58DiagnosticEngine:
         drop = peak_val - min_after
 
         if drop > self.config.boost_mid_pull_drop_psi:
-            self._flags.add("boost_mid_pull_drop_b")
-            self._alerts.append(Alert(
+            state.flags.add("boost_mid_pull_drop_b")
+            state.alerts.append(Alert(
                 flag="boost_mid_pull_drop_b",
                 severity=AlertSeverity.MINOR,
                 message=(
@@ -805,18 +805,18 @@ class B58DiagnosticEngine:
     # Multi-pull comparison (includes Pillar B inter-pull checks)
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _compare_pulls(self) -> Optional[List[PullSummary]]:
+    def _compare_pulls(self, state: _AnalysisState) -> Optional[List[PullSummary]]:
         if len(self.prime_extracted_data) < 2:
             return None
 
         time_col = self.map["time"]
-        self._sorted_pulls = sorted(
+        state.sorted_pulls = sorted(
             self.prime_extracted_data,
             key=lambda p: pd.to_numeric(p[time_col], errors="coerce").iloc[0],
         )
 
         summaries: List[PullSummary] = []
-        for i, pull in enumerate(self._sorted_pulls):
+        for i, pull in enumerate(state.sorted_pulls):
             mean_timing = None
             if self.engine_timing_cols:
                 timing = pull[self.engine_timing_cols].apply(pd.to_numeric, errors="coerce")
@@ -845,9 +845,9 @@ class B58DiagnosticEngine:
         if len(timing_seq) >= 2:
             is_degrading = all(timing_seq[i] < timing_seq[i - 1] for i in range(1, len(timing_seq)))
             if is_degrading:
-                self._flags.add("timing_degradation_heat_soak")
+                state.flags.add("timing_degradation_heat_soak")
                 pull_values = ", ".join(f"{v:.1f}°" for v in timing_seq)
-                self._alerts.append(Alert(
+                state.alerts.append(Alert(
                     flag="timing_degradation_heat_soak",
                     severity=AlertSeverity.MAJOR,
                     message=(
@@ -861,23 +861,23 @@ class B58DiagnosticEngine:
                 ))
 
         # Pillar B: inter-pull checks
-        self._check_iat_inter_pull_jump_b()
-        self._check_boost_progression_b()
+        self._check_iat_inter_pull_jump_b(state)
+        self._check_boost_progression_b(state)
 
         return summaries
 
-    def _check_iat_inter_pull_jump_b(self) -> None:
+    def _check_iat_inter_pull_jump_b(self, state: _AnalysisState) -> None:
         """Pillar B: large IAT jump between pull-start readings — intercooler not recovering."""
-        if len(self._sorted_pulls) < 2:
+        if len(state.sorted_pulls) < 2:
             return
         iat_col = self.map["iat"]
         if iat_col not in self.cols:
             return
 
         jumps = []
-        for i in range(1, len(self._sorted_pulls)):
-            prev_end = pd.to_numeric(self._sorted_pulls[i - 1][iat_col], errors="coerce").iloc[-1]
-            curr_start = pd.to_numeric(self._sorted_pulls[i][iat_col], errors="coerce").iloc[0]
+        for i in range(1, len(state.sorted_pulls)):
+            prev_end = pd.to_numeric(state.sorted_pulls[i - 1][iat_col], errors="coerce").iloc[-1]
+            curr_start = pd.to_numeric(state.sorted_pulls[i][iat_col], errors="coerce").iloc[0]
             if pd.notna(prev_end) and pd.notna(curr_start):
                 jumps.append(curr_start - prev_end)
 
@@ -886,10 +886,10 @@ class B58DiagnosticEngine:
 
         max_jump = max(jumps)
         if max_jump > self.config.iat_inter_pull_jump_f:
-            self._flags.add("iat_inter_pull_jump_b")
-            self._insights.append(Alert(
+            state.flags.add("iat_inter_pull_jump_b")
+            state.insights.append(Alert(
                 flag="iat_inter_pull_jump_b",
-                severity=AlertSeverity.MINOR,
+                severity=AlertSeverity.INFO,
                 message=(
                     f"🌡️ IAT Inter-Pull Jump (Pillar B): Intake temps jumped {round(max_jump)}°F "
                     f"between pulls — intercooler is not recovering between runs."
@@ -900,14 +900,14 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _check_boost_progression_b(self) -> None:
+    def _check_boost_progression_b(self, state: _AnalysisState) -> None:
         """Pillar B: peak boost declining monotonically across pulls — turbo or boost control issue."""
-        if len(self._sorted_pulls) < 2:
+        if len(state.sorted_pulls) < 2:
             return
 
         peak_boosts = [
             float(pd.to_numeric(p[self.map["boost_actual"]], errors="coerce").max())
-            for p in self._sorted_pulls
+            for p in state.sorted_pulls
         ]
 
         # Require each pull to drop by more than 1 PSI to avoid noise
@@ -915,11 +915,11 @@ class B58DiagnosticEngine:
             peak_boosts[i] < peak_boosts[i - 1] - 1.0 for i in range(1, len(peak_boosts))
         )
         if is_declining:
-            self._flags.add("boost_degradation_b")
+            state.flags.add("boost_degradation_b")
             vals = ", ".join(f"{b:.1f}" for b in peak_boosts)
-            self._insights.append(Alert(
+            state.insights.append(Alert(
                 flag="boost_degradation_b",
-                severity=AlertSeverity.MINOR,
+                severity=AlertSeverity.INFO,
                 message=(
                     f"📉 Boost Degradation (Pillar B): Peak boost declining each pull "
                     f"({vals} PSI)."
@@ -934,7 +934,7 @@ class B58DiagnosticEngine:
     # Pillar C — cross-parameter physical relationships
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _correlate_iat_timing_c(self) -> None:
+    def _correlate_iat_timing_c(self, state: _AnalysisState) -> None:
         """
         Pillar C: IAT rises within the pull AND timing retards over the same window.
         Confirms heat-soak feedback loop — not octane or knock.
@@ -954,8 +954,8 @@ class B58DiagnosticEngine:
         adv_change = float(adv[common].iloc[-1] - adv[common].iloc[0])  # negative = retard
 
         if iat_rise > self.config.iat_timing_rise_min_f and adv_change < -self.config.iat_timing_retard_min_deg:
-            self._flags.add("iat_timing_correlation_c")
-            self._insights.append(Alert(
+            state.flags.add("iat_timing_correlation_c")
+            state.insights.append(Alert(
                 flag="iat_timing_correlation_c",
                 severity=AlertSeverity.INFO,
                 message=(
@@ -969,7 +969,7 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _correlate_charge_air_timing_c(self) -> None:
+    def _correlate_charge_air_timing_c(self, state: _AnalysisState) -> None:
         """
         Pillar C: charge air temp (post-IC) rises within the pull AND timing retards.
         More precise than the ambient-IAT correlation — confirms intercooler heat soak.
@@ -989,8 +989,8 @@ class B58DiagnosticEngine:
         adv_change = float(adv[common].iloc[-1] - adv[common].iloc[0])
 
         if ca_rise > self.config.charge_air_rise_min_f and adv_change < -self.config.iat_timing_retard_min_deg:
-            self._flags.add("charge_air_timing_c")
-            self._insights.append(Alert(
+            state.flags.add("charge_air_timing_c")
+            state.insights.append(Alert(
                 flag="charge_air_timing_c",
                 severity=AlertSeverity.INFO,
                 message=(
@@ -1004,7 +1004,7 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _correlate_boost_rail_c(self) -> None:
+    def _correlate_boost_rail_c(self, state: _AnalysisState) -> None:
         """
         Pillar C: boost climbs post-spool while rail pressure drops — HPFP can't meet fuel demand.
         Uses Pearson correlation: healthy = near-zero or positive, struggling = strongly negative.
@@ -1023,7 +1023,8 @@ class B58DiagnosticEngine:
         if len(boost_ps) < 5:
             return
 
-        corr = boost_ps.corr(rail_ps)
+        with np.errstate(invalid="ignore"):
+            corr = boost_ps.corr(rail_ps)
         rail_drop = float(rail_ps.max() - rail_ps.min())
         boost_rise = float(boost_ps.max() - boost_ps.min())
 
@@ -1033,8 +1034,8 @@ class B58DiagnosticEngine:
             and rail_drop > self.config.boost_rail_min_drop_psi
             and boost_rise > 2.0
         ):
-            self._flags.add("boost_rail_divergence_c")
-            self._alerts.append(Alert(
+            state.flags.add("boost_rail_divergence_c")
+            state.alerts.append(Alert(
                 flag="boost_rail_divergence_c",
                 severity=AlertSeverity.MAJOR,
                 message=(
@@ -1048,7 +1049,7 @@ class B58DiagnosticEngine:
                 ),
             ))
 
-    def _correlate_throttle_afr_c(self) -> None:
+    def _correlate_throttle_afr_c(self, state: _AnalysisState) -> None:
         """
         Pillar C: at WOT throttle the AFR must be in the rich band.
         Flags when a significant fraction of full-throttle samples are lean.
@@ -1071,8 +1072,8 @@ class B58DiagnosticEngine:
 
         if len(lean_wot) > len(afr_wot) * self.config.throttle_afr_lean_fraction:
             lean_pct = round(100 * len(lean_wot) / len(afr_wot))
-            self._flags.add("throttle_afr_lean_c")
-            self._alerts.append(Alert(
+            state.flags.add("throttle_afr_lean_c")
+            state.alerts.append(Alert(
                 flag="throttle_afr_lean_c",
                 severity=AlertSeverity.MAJOR,
                 message=(
@@ -1090,240 +1091,320 @@ class B58DiagnosticEngine:
     # Synthesis — cross-pillar correlation engine
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _synthesize_diagnosis(self) -> None:
+    def _synthesize_diagnosis(self, state: _AnalysisState) -> None:
         """
         Cross-reference flags from all three pillars to identify root causes.
         Single-pillar findings are reported with appropriate confidence.
         Multi-pillar corroboration raises confidence and sharpens the diagnosis.
-        Diagnosis strings contain both technical detail and plain-English explanation.
         """
-        f = self._flags
+        f = state.flags
 
         # ── Fuel pressure / HPFP ─────────────────────────────────────────────
         if "hpfp_crash" in f and "lpfp_starvation" in f:
             n = sum(["rail_deviation_a" in f, "rail_drop_rate_b" in f, "boost_rail_divergence_c" in f])
             conf = _confidence_label(n)
-            self._diagnosis.append(
-                f"🛠️ **Cascading Fuel Failure{conf}:** HPFP is crashing because the in-tank LPFP "
-                f"is failing to supply it. Fix or upgrade the LPFP first — replacing the HPFP alone "
-                f"will not resolve this.\n\n"
-                f"💬 **Plain English:** Think of it as two pumps in series — the in-tank pump feeds "
-                f"the high-pressure pump. The in-tank pump is choking, so everything downstream starves. "
-                f"Start with the LPFP."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_cascading_fuel_failure",
+                severity=AlertSeverity.MAJOR,
+                message=(
+                    f"**Cascading Fuel Failure{conf}:** HPFP is crashing because the in-tank LPFP "
+                    f"is failing to supply it. Fix or upgrade the LPFP first — replacing the HPFP alone "
+                    f"will not resolve this.\n\n"
+                    f"**Plain English:** Think of it as two pumps in series — the in-tank pump feeds "
+                    f"the high-pressure pump. The in-tank pump is choking, so everything downstream starves. "
+                    f"Start with the LPFP."
+                ),
+            ))
 
         elif "hpfp_crash" in f:
             n = sum(["rail_deviation_a" in f, "rail_drop_rate_b" in f, "boost_rail_divergence_c" in f])
             conf = _confidence_label(n)
-            self._diagnosis.append(
-                f"🛠️ **HPFP Limit Reached{conf}:** HPFP crashed but LPFP is healthy — "
-                f"you have exceeded the stock HPFP's physical capacity for this fuel blend. "
-                f"Consider a TU/Dorch upgrade or reduce E85 content.\n\n"
-                f"💬 **Plain English:** Your high-pressure fuel pump hit its ceiling. "
-                f"The in-tank pump is fine — the fix is either a pump upgrade or less ethanol in the tank."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_hpfp_limit",
+                severity=AlertSeverity.MAJOR,
+                message=(
+                    f"**HPFP Limit Reached{conf}:** HPFP crashed but LPFP is healthy — "
+                    f"you have exceeded the stock HPFP's physical capacity for this fuel blend. "
+                    f"Consider a TU/Dorch upgrade or reduce E85 content.\n\n"
+                    f"**Plain English:** Your high-pressure fuel pump hit its ceiling. "
+                    f"The in-tank pump is fine — the fix is either a pump upgrade or less ethanol in the tank."
+                ),
+            ))
 
         elif "rail_drop_rate_b" in f and "boost_rail_divergence_c" in f:
-            # Dynamic detection caught a struggling HPFP before it hit the absolute floor
-            self._diagnosis.append(
-                "⚠️ **HPFP Under Load — Early Warning (Pillars B+C):** Rail pressure drops at an "
-                "excessive rate during WOT, and boost demand and rail pressure are moving in opposite "
-                "directions. The pump hasn't hard-crashed yet, but the pattern indicates it is "
-                "struggling. Monitor across logs; an upgrade may be warranted.\n\n"
-                "💬 **Plain English:** Your fuel pump is working harder than it should and starting "
-                "to fall behind when boost builds. It hasn't failed yet — but it's telling you it will."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_hpfp_early_warning",
+                severity=AlertSeverity.MINOR,
+                message=(
+                    "**HPFP Under Load — Early Warning (Pillars B+C):** Rail pressure drops at an "
+                    "excessive rate during WOT, and boost demand and rail pressure are moving in opposite "
+                    "directions. The pump hasn't hard-crashed yet, but the pattern indicates it is "
+                    "struggling. Monitor across logs; an upgrade may be warranted.\n\n"
+                    "**Plain English:** Your fuel pump is working harder than it should and starting "
+                    "to fall behind when boost builds. It hasn't failed yet — but it's telling you it will."
+                ),
+            ))
 
         elif "rail_deviation_a" in f and "rail_drop_rate_b" in f:
-            self._diagnosis.append(
-                "⚠️ **HPFP Trending Low (Pillars A+B):** Rail pressure is below this car's own "
-                "non-WOT baseline AND drops at an elevated rate during the pull. "
-                "Watch for progression across logs.\n\n"
-                "💬 **Plain English:** Fuel pressure is lower than normal for this car and falls "
-                "quickly when the engine works hard. Worth watching before it becomes a bigger problem."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_hpfp_trending_low",
+                severity=AlertSeverity.MINOR,
+                message=(
+                    "**HPFP Trending Low (Pillars A+B):** Rail pressure is below this car's own "
+                    "non-WOT baseline AND drops at an elevated rate during the pull. "
+                    "Watch for progression across logs.\n\n"
+                    "**Plain English:** Fuel pressure is lower than normal for this car and falls "
+                    "quickly when the engine works hard. Worth watching before it becomes a bigger problem."
+                ),
+            ))
 
         # ── AFR / fueling ────────────────────────────────────────────────────
         if "dangerous_lean" in f:
             if "afr_lean_swing_b" in f or "throttle_afr_lean_c" in f:
-                self._diagnosis.append(
-                    "🚨 **CRITICAL SAFETY — Do Not Drive (High Confidence):** A dangerous lean "
-                    "condition is confirmed by multiple detection methods. The engine ran critically "
-                    "short on fuel at WOT. Do not do another pull. "
-                    "Inspect injectors, fuel pumps, and primary O2 sensor immediately.\n\n"
-                    "💬 **Plain English:** Multiple sensor readings agree — not enough fuel reached "
-                    "the engine during hard acceleration. This can melt pistons. Stop pulling now."
-                )
+                state.diagnosis.append(Alert(
+                    flag="dx_dangerous_lean_critical",
+                    severity=AlertSeverity.CRITICAL,
+                    message=(
+                        "**CRITICAL SAFETY — Do Not Drive (High Confidence):** A dangerous lean "
+                        "condition is confirmed by multiple detection methods. The engine ran critically "
+                        "short on fuel at WOT. Do not do another pull. "
+                        "Inspect injectors, fuel pumps, and primary O2 sensor immediately.\n\n"
+                        "**Plain English:** Multiple sensor readings agree — not enough fuel reached "
+                        "the engine during hard acceleration. This can melt pistons. Stop pulling now."
+                    ),
+                ))
             else:
-                self._diagnosis.append(
-                    "🚨 **CRITICAL SAFETY — Do Not Drive:** The engine ran dangerously lean at WOT. "
-                    "Do not do another pull. Inspect injectors, fuel pumps, and primary O2 sensor.\n\n"
-                    "💬 **Plain English:** Way too little fuel for the air the engine consumed. "
-                    "Find the cause before driving hard again."
-                )
+                state.diagnosis.append(Alert(
+                    flag="dx_dangerous_lean",
+                    severity=AlertSeverity.CRITICAL,
+                    message=(
+                        "**CRITICAL SAFETY — Do Not Drive:** The engine ran dangerously lean at WOT. "
+                        "Do not do another pull. Inspect injectors, fuel pumps, and primary O2 sensor.\n\n"
+                        "**Plain English:** Way too little fuel for the air the engine consumed. "
+                        "Find the cause before driving hard again."
+                    ),
+                ))
 
         elif "afr_lean_swing_b" in f and "throttle_afr_lean_c" in f:
-            # Caught by dynamic detection before hitting the absolute dangerous threshold
-            self._diagnosis.append(
-                "⚠️ **Marginal Fueling — High Attention (Pillars B+C):** AFR swings lean mid-pull "
-                "and lean samples cluster at full throttle — the fueling system is at its limit "
-                "under peak demand. Not yet at the dangerous threshold, but this is the pattern "
-                "that precedes a dangerous lean event.\n\n"
-                "💬 **Plain English:** The car is running lean when you push it hardest, confirmed "
-                "from two angles. It hasn't hit the danger zone yet — but it's close. "
-                "Sort the fueling before it gets worse."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_marginal_fueling",
+                severity=AlertSeverity.MAJOR,
+                message=(
+                    "**Marginal Fueling — High Attention (Pillars B+C):** AFR swings lean mid-pull "
+                    "and lean samples cluster at full throttle — the fueling system is at its limit "
+                    "under peak demand. Not yet at the dangerous threshold, but this is the pattern "
+                    "that precedes a dangerous lean event.\n\n"
+                    "**Plain English:** The car is running lean when you push it hardest, confirmed "
+                    "from two angles. It hasn't hit the danger zone yet — but it's close. "
+                    "Sort the fueling before it gets worse."
+                ),
+            ))
 
         # ── Boost / turbo ────────────────────────────────────────────────────
         if "boost_leak" in f and "wgdc_saturation" in f and "boost_mid_pull_drop_b" in f:
-            self._diagnosis.append(
-                "🛠️ **Boost Leak — Turbo Saturated:** A boost leak is confirmed by a power-band "
-                "deficit, mid-pull boost drop, and the wastegate fully closed compensating. "
-                "Check charge pipes and inlet couplers.\n\n"
-                "💬 **Plain English:** Boost is escaping under pressure. The turbo is working at "
-                "100% just to compensate and still can't hit target. Find and seal the leak."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_boost_leak_saturated",
+                severity=AlertSeverity.MAJOR,
+                message=(
+                    "**Boost Leak — Turbo Saturated:** A boost leak is confirmed by a power-band "
+                    "deficit, mid-pull boost drop, and the wastegate fully closed compensating. "
+                    "Check charge pipes and inlet couplers.\n\n"
+                    "**Plain English:** Boost is escaping under pressure. The turbo is working at "
+                    "100% just to compensate and still can't hit target. Find and seal the leak."
+                ),
+            ))
         elif "boost_leak" in f and "wgdc_saturation" in f:
-            self._diagnosis.append(
-                "🛠️ **Boost Leak:** Power-band boost deficit with wastegate fully closed — "
-                "boost is escaping faster than the turbo can compensate. "
-                "Check charge pipes and inlet couplers.\n\n"
-                "💬 **Plain English:** The turbo is working at 100% and still can't reach target. "
-                "Something is leaking — check all charge pipes and couplers."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_boost_leak",
+                severity=AlertSeverity.MAJOR,
+                message=(
+                    "**Boost Leak:** Power-band boost deficit with wastegate fully closed — "
+                    "boost is escaping faster than the turbo can compensate. "
+                    "Check charge pipes and inlet couplers.\n\n"
+                    "**Plain English:** The turbo is working at 100% and still can't reach target. "
+                    "Something is leaking — check all charge pipes and couplers."
+                ),
+            ))
         elif "boost_leak" in f:
-            self._diagnosis.append(
-                "⚠️ **Boost Deficit:** Boost is consistently under target in the power band. "
-                "Possible boost leak, wastegate issue, or turbo limitation.\n\n"
-                "💬 **Plain English:** The engine isn't getting the boost it's asking for. "
-                "Check charge pipes for leaks and confirm the wastegate is sealing properly."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_boost_deficit",
+                severity=AlertSeverity.MINOR,
+                message=(
+                    "**Boost Deficit:** Boost is consistently under target in the power band. "
+                    "Possible boost leak, wastegate issue, or turbo limitation.\n\n"
+                    "**Plain English:** The engine isn't getting the boost it's asking for. "
+                    "Check charge pipes for leaks and confirm the wastegate is sealing properly."
+                ),
+            ))
 
         if "boost_mid_pull_drop_b" in f and "boost_leak" not in f:
-            self._diagnosis.append(
-                "⚠️ **Mid-Pull Boost Anomaly (Pillar B):** Boost builds correctly then drops "
-                "unexpectedly after hitting peak — possible intermittent boost leak (only opens "
-                "under full pressure), wastegate creep, or compressor surge. "
-                "Check if this repeats across logs.\n\n"
-                "💬 **Plain English:** Boost was building fine then fell off mid-pull for no "
-                "obvious reason. Could be a coupler that only leaks under full pressure, "
-                "a wastegate that doesn't hold, or the turbo hitting its surge point."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_boost_mid_pull_anomaly",
+                severity=AlertSeverity.MINOR,
+                message=(
+                    "**Mid-Pull Boost Anomaly (Pillar B):** Boost builds correctly then drops "
+                    "unexpectedly after hitting peak — possible intermittent boost leak (only opens "
+                    "under full pressure), wastegate creep, or compressor surge. "
+                    "Check if this repeats across logs.\n\n"
+                    "**Plain English:** Boost was building fine then fell off mid-pull for no "
+                    "obvious reason. Could be a coupler that only leaks under full pressure, "
+                    "a wastegate that doesn't hold, or the turbo hitting its surge point."
+                ),
+            ))
 
         # ── Knock / timing ───────────────────────────────────────────────────
         thermal_flags = {"iat_heat_soak", "charge_air_high", "charge_air_timing_c"}
         if ("knock" in f or "timing_pull" in f) and not (f & thermal_flags):
             if "timing_retard_event_b" in f:
-                self._diagnosis.append(
-                    "🛠️ **Knock — Octane Limit (High Confidence, Pillars A+B):** "
-                    "Cylinder timing corrections, an ECU knock flag, and a mid-pull retard "
-                    "event all independently point to the same cause: the fuel is not adequate "
-                    "for this tune's timing targets. "
-                    "Add 1–2 gallons of E85 or flash to a lower-octane map.\n\n"
-                    "💬 **Plain English:** Three separate checks all say the same thing — the fuel "
-                    "and the tune aren't matched. Better fuel or a safer map is the fix."
-                )
+                state.diagnosis.append(Alert(
+                    flag="dx_knock_octane_limit_high",
+                    severity=AlertSeverity.MAJOR,
+                    message=(
+                        "**Knock — Octane Limit (High Confidence, Pillars A+B):** "
+                        "Cylinder timing corrections, an ECU knock flag, and a mid-pull retard "
+                        "event all independently point to the same cause: the fuel is not adequate "
+                        "for this tune's timing targets. "
+                        "Add 1–2 gallons of E85 or flash to a lower-octane map.\n\n"
+                        "**Plain English:** Three separate checks all say the same thing — the fuel "
+                        "and the tune aren't matched. Better fuel or a safer map is the fix."
+                    ),
+                ))
             else:
-                self._diagnosis.append(
-                    "🛠️ **Octane Limit:** Timing corrections present without significant heat soak — "
-                    "points to fuel quality. Try adding 1–2 gallons of E85 or flash a lower-octane map.\n\n"
-                    "💬 **Plain English:** The car pulled timing because of fuel quality, not heat. "
-                    "Better fuel or a safer tune map will fix this."
-                )
+                state.diagnosis.append(Alert(
+                    flag="dx_knock_octane_limit",
+                    severity=AlertSeverity.MINOR,
+                    message=(
+                        "**Octane Limit:** Timing corrections present without significant heat soak — "
+                        "points to fuel quality. Try adding 1–2 gallons of E85 or flash a lower-octane map.\n\n"
+                        "**Plain English:** The car pulled timing because of fuel quality, not heat. "
+                        "Better fuel or a safer tune map will fix this."
+                    ),
+                ))
 
         # ── Charge air / intercooler heat soak ───────────────────────────────
         if "charge_air_high" in f:
             n = sum(["charge_air_timing_c" in f, "iat_timing_correlation_c" in f])
             conf = _confidence_label(n)
-            ca_alerts = [a for a in self._alerts if a.flag == "charge_air_high"]
-            peak_str = f" ({ca_alerts[0].message.split('Peak')[1].split(' during')[0].strip()})" if ca_alerts else ""
-            self._diagnosis.append(
-                f"🌡️ **Intercooler Heat Soak{conf}:** Charge air temps{peak_str} are far beyond "
-                f"what the intercooler can handle at this power level. This directly causes timing "
-                f"retard and power loss — the ECU protects the engine by pulling advance as temps climb. "
-                f"Allow more cool-down time between pulls; consider an intercooler or charge pipe upgrade.\n\n"
-                f"💬 **Plain English:** The air entering the engine is too hot after the intercooler. "
-                f"Hot air = less power and the computer pulls timing to prevent detonation. "
-                f"Cool down between runs. If it persists, the intercooler isn't big enough for this tune."
-            )
+            peak_str = f" ({round(state.charge_air_peak_f)}°F)" if state.charge_air_peak_f is not None else ""
+            state.diagnosis.append(Alert(
+                flag="dx_intercooler_heat_soak",
+                severity=AlertSeverity.MAJOR,
+                message=(
+                    f"**Intercooler Heat Soak{conf}:** Charge air temps{peak_str} are far beyond "
+                    f"what the intercooler can handle at this power level. This directly causes timing "
+                    f"retard and power loss — the ECU protects the engine by pulling advance as temps climb. "
+                    f"Allow more cool-down time between pulls; consider an intercooler or charge pipe upgrade.\n\n"
+                    f"**Plain English:** The air entering the engine is too hot after the intercooler. "
+                    f"Hot air = less power and the computer pulls timing to prevent detonation. "
+                    f"Cool down between runs. If it persists, the intercooler isn't big enough for this tune."
+                ),
+            ))
 
         # ── Heat soak ────────────────────────────────────────────────────────
         if "timing_degradation_heat_soak" in f:
             if "iat_timing_correlation_c" in f or "iat_inter_pull_jump_b" in f:
-                self._diagnosis.append(
-                    "🌡️ **Inter-Run Heat Soak (Confirmed, Multiple Pillars):** Progressive timing "
-                    "degradation across pulls is corroborated by IAT→timing correlation and/or "
-                    "inter-pull IAT jumps. Allow 5–10 minutes of cooling between runs. "
-                    "If it persists with adequate cooling, investigate intercooler and charge pipe.\n\n"
-                    "💬 **Plain English:** Each pull gets hotter and the computer pulls more timing "
-                    "each time — confirmed by multiple data sources. Cool-down time between pulls "
-                    "is the immediate fix. If that's not enough, consider an intercooler upgrade."
-                )
+                state.diagnosis.append(Alert(
+                    flag="dx_heat_soak_multi_pull",
+                    severity=AlertSeverity.MINOR,
+                    message=(
+                        "**Inter-Run Heat Soak (Confirmed, Multiple Pillars):** Progressive timing "
+                        "degradation across pulls is corroborated by IAT→timing correlation and/or "
+                        "inter-pull IAT jumps. Allow 5–10 minutes of cooling between runs. "
+                        "If it persists with adequate cooling, investigate intercooler and charge pipe.\n\n"
+                        "**Plain English:** Each pull gets hotter and the computer pulls more timing "
+                        "each time — confirmed by multiple data sources. Cool-down time between pulls "
+                        "is the immediate fix. If that's not enough, consider an intercooler upgrade."
+                    ),
+                ))
             else:
-                self._diagnosis.append(
-                    "🌡️ **Inter-Run Heat Soak:** Timing pulled further on each successive run. "
-                    "Allow 5–10 minutes of cooling between pulls. "
-                    "If persistent, consider upgraded charge pipe or intercooler.\n\n"
-                    "💬 **Plain English:** The car gets more heat-soaked with each run. "
-                    "More cool-down time between pulls is the fix."
-                )
+                state.diagnosis.append(Alert(
+                    flag="dx_heat_soak_single",
+                    severity=AlertSeverity.MINOR,
+                    message=(
+                        "**Inter-Run Heat Soak:** Timing pulled further on each successive run. "
+                        "Allow 5–10 minutes of cooling between pulls. "
+                        "If persistent, consider upgraded charge pipe or intercooler.\n\n"
+                        "**Plain English:** The car gets more heat-soaked with each run. "
+                        "More cool-down time between pulls is the fix."
+                    ),
+                ))
 
         elif ("iat_timing_correlation_c" in f or "charge_air_timing_c" in f) and "iat_heat_soak" in f:
-            self._diagnosis.append(
-                "🌡️ **Single-Pull Heat Soak (Confirmed, Pillar C):** IAT rose and timing retarded "
-                "in direct correlation within this pull — heat-soak feedback loop is active. "
-                "The car arrived heat-soaked or the intercooler is undersized for this power level.\n\n"
-                "💬 **Plain English:** The air got hotter during the pull and the computer backed "
-                "off timing directly in response — both happened in lockstep in the same run."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_heat_soak_single_pull_timing",
+                severity=AlertSeverity.MINOR,
+                message=(
+                    "**Single-Pull Heat Soak (Confirmed, Pillar C):** IAT rose and timing retarded "
+                    "in direct correlation within this pull — heat-soak feedback loop is active. "
+                    "The car arrived heat-soaked or the intercooler is undersized for this power level.\n\n"
+                    "**Plain English:** The air got hotter during the pull and the computer backed "
+                    "off timing directly in response — both happened in lockstep in the same run."
+                ),
+            ))
 
         # ── TCU ──────────────────────────────────────────────────────────────
         if "throttle_closure" in f and "torque_limiter" in f:
-            self._diagnosis.append(
-                "⚙️ **TCU Intervention:** Engine torque is exceeding the transmission's "
-                "programmed limit, causing throttle closures. "
-                "An xHP transmission tune may be needed to raise the torque cap.\n\n"
-                "💬 **Plain English:** The gearbox is telling the engine to slow down — "
-                "it's getting more torque than it's calibrated to handle. "
-                "An xHP tune can raise that limit."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_tcu_intervention",
+                severity=AlertSeverity.INFO,
+                message=(
+                    "**TCU Intervention:** Engine torque is exceeding the transmission's "
+                    "programmed limit, causing throttle closures. "
+                    "An xHP transmission tune may be needed to raise the torque cap.\n\n"
+                    "**Plain English:** The gearbox is telling the engine to slow down — "
+                    "it's getting more torque than it's calibrated to handle. "
+                    "An xHP tune can raise that limit."
+                ),
+            ))
 
         # ── Stand-alone insights ──────────────────────────────────────────────
         if "iat_inter_pull_jump_b" in f and "timing_degradation_heat_soak" not in f:
-            self._diagnosis.append(
-                "⚠️ **Intercooler Recovery (Pillar B):** IAT jumps significantly between pulls "
-                "but timing hasn't walked back yet — the intercooler is under-recovering. "
-                "This is the precursor to heat-soak timing degradation.\n\n"
-                "💬 **Plain English:** Intake temps spike between runs even though timing is still "
-                "holding. The intercooler isn't cooling down fast enough between pulls."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_intercooler_recovery",
+                severity=AlertSeverity.INFO,
+                message=(
+                    "**Intercooler Recovery (Pillar B):** IAT jumps significantly between pulls "
+                    "but timing hasn't walked back yet — the intercooler is under-recovering. "
+                    "This is the precursor to heat-soak timing degradation.\n\n"
+                    "**Plain English:** Intake temps spike between runs even though timing is still "
+                    "holding. The intercooler isn't cooling down fast enough between pulls."
+                ),
+            ))
 
         if "boost_degradation_b" in f and "boost_leak" not in f and "wgdc_saturation" not in f:
-            self._diagnosis.append(
-                "⚠️ **Boost Falling Across Session (Pillar B):** Peak boost declining across "
-                "pulls without a confirmed boost leak. Possible causes: turbo heat soak, "
-                "wastegate actuator drift, or boost solenoid degradation.\n\n"
-                "💬 **Plain English:** Each run makes a little less boost for no obvious reason. "
-                "Could be the turbo getting too hot, or something loosening in the boost control system."
-            )
+            state.diagnosis.append(Alert(
+                flag="dx_boost_degradation",
+                severity=AlertSeverity.MINOR,
+                message=(
+                    "**Boost Falling Across Session (Pillar B):** Peak boost declining across "
+                    "pulls without a confirmed boost leak. Possible causes: turbo heat soak, "
+                    "wastegate actuator drift, or boost solenoid degradation.\n\n"
+                    "**Plain English:** Each run makes a little less boost for no obvious reason. "
+                    "Could be the turbo getting too hot, or something loosening in the boost control system."
+                ),
+            ))
 
         # ── Clean bill of health ──────────────────────────────────────────────
-        if not self._diagnosis and not self._alerts:
-            self._diagnosis.append(
-                "✅ **Clean Bill of Health:** Hardware is happy, fuel pressure is stable, "
-                "and timing is clean. The car is running exactly as your tuner intended.\n\n"
-                "💬 **Plain English:** Nothing wrong — no issues found across any check."
-            )
+        if not state.diagnosis and not state.alerts:
+            state.diagnosis.append(Alert(
+                flag="dx_clean",
+                severity=AlertSeverity.INFO,
+                message=(
+                    "**Clean Bill of Health:** Hardware is happy, fuel pressure is stable, "
+                    "and timing is clean. The car is running exactly as your tuner intended.\n\n"
+                    "**Plain English:** Nothing wrong — no issues found across any check."
+                ),
+            ))
 
     # ──────────────────────────────────────────────────────────────────────────
     # Scoring
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _calculate_score(self) -> int:
-        if any(a.severity == AlertSeverity.CRITICAL for a in self._alerts):
+    def _calculate_score(self, state: _AnalysisState) -> int:
+        if any(a.severity == AlertSeverity.CRITICAL for a in state.alerts):
             return 0
         deductions = sum(
             SEVERITY_DEDUCTIONS.get(a.severity, 0) or 0
-            for a in self._alerts
+            for a in state.alerts
         )
         return max(10, 100 - deductions)

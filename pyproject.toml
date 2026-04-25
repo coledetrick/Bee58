@@ -27,3 +27,17 @@ include = ["app*"]
 testpaths = ["tests"]
 # Makes the project root importable so `from app.engine.rules import ...` works
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes (unused imports, undefined names)
+    "I",   # isort
+    "UP",  # pyupgrade (modern Python syntax)
+]
+ignore = [
+    "E501",  # line too long — long alert messages are intentional, not a style issue
+]

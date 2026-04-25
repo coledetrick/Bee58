@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from app.engine.rules import B58DiagnosticEngine
+from app.engine.models import AlertSeverity
 
 st.set_page_config(page_title="B58 Specialized Diagnostic", layout="wide")
 
@@ -75,7 +76,7 @@ def main():
                 st.subheader("🛠️ Performance Insights")
                 if results.performance_insights:
                     for p in results.performance_insights:
-                        if "ℹ️" in p.message or "📈" in p.message:
+                        if p.severity == AlertSeverity.INFO:
                             st.info(p.message)
                         else:
                             st.warning(p.message)
@@ -87,20 +88,13 @@ def main():
             # --- ROOT CAUSE ANALYSIS (synthesis — derived from findings above) ---
             st.subheader("🔍 Root Cause Analysis")
             st.caption("Interpretation based on the findings above.")
-            if results.diagnosis:
-                for diag in results.diagnosis:
-                    if "✅" in diag:
-                        st.success(diag)
-                    elif "🚨" in diag:
-                        st.error(diag)
-                    else:
-                        st.warning(diag)
-            elif not results.alerts:
-                st.success(
-                    "✅ **Clean Bill of Health:** Hardware is happy, fuel pressure is stable, "
-                    "and timing is clean. The car is running exactly as your tuner intended.\n\n"
-                    "💬 **Plain English:** Nothing wrong — no issues found across any check."
-                )
+            for d in results.diagnosis:
+                if d.severity == AlertSeverity.CRITICAL:
+                    st.error(d.message)
+                elif d.severity == AlertSeverity.INFO:
+                    st.info(d.message)
+                else:
+                    st.warning(d.message)
 
             # --- MULTI-PULL COMPARISON TABLE ---
             if results.pull_comparison:
