@@ -18,6 +18,7 @@ class _AnalysisState:
     sorted_pulls: List[pd.DataFrame] = field(default_factory=list)
     baseline: dict = field(default_factory=dict)
     charge_air_peak_f: Optional[float] = None
+    gear_change_mask: pd.Series = field(default_factory=pd.Series)
 
 
 class AlertSeverity(str, Enum):

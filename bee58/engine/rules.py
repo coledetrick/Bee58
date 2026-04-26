@@ -139,6 +139,25 @@ class B58DiagnosticEngine:
             candidates = [f"(RAM) Ignition Timing Corr. Cyl. {i}[°]" for i in range(1, 7)]
         return [c for c in candidates if c in self.cols]
 
+    def _build_gear_change_mask(self) -> pd.Series:
+        """
+        Returns a boolean mask (True = exclude) covering each gear-change transition and its
+        recovery window. A gear change is a sudden RPM drop while pedal stays floored — the
+        resulting rail crash, AFR spike, and timing retard are transmission artifacts, not
+        hardware failures.
+        """
+        rpm = pd.to_numeric(self.prime_log[self.map["rpm"]], errors="coerce")
+        rpm_diff = rpm.diff()
+        gear_change_pts = self.prime_log.index[rpm_diff < -self.config.gear_change_rpm_drop]
+
+        mask = pd.Series(False, index=self.prime_log.index)
+        recovery = self.config.gear_change_recovery_rows
+        for idx in gear_change_pts:
+            pos = self.prime_log.index.get_loc(idx)
+            end = min(pos + recovery + 1, len(self.prime_log))
+            mask.iloc[pos:end] = True
+        return mask
+
     def _extract_prime_wot_pull(self) -> pd.DataFrame:
         """
         Find the single best WOT pull using a strict pedal threshold (default 99%).
@@ -214,6 +233,7 @@ class B58DiagnosticEngine:
             return None
 
         state = _AnalysisState()
+        state.gear_change_mask = self._build_gear_change_mask()
 
         # Pillar A: establish non-WOT baseline for this car
         self._compute_baseline_stats(state)
@@ -332,7 +352,7 @@ class B58DiagnosticEngine:
         delta = target - actual
 
         rpm_series = pd.to_numeric(self.prime_log[m["rpm"]], errors="coerce")
-        post_spool = self.prime_log[rpm_series > self.config.post_spool_rpm]
+        post_spool = self.prime_log[rpm_series > self.config.boost_check_min_rpm]
         if post_spool.empty:
             return
 
@@ -744,6 +764,14 @@ class B58DiagnosticEngine:
         with np.errstate(divide="ignore", invalid="ignore"):
             rate = d_rail / dt.replace(0, np.nan)
 
+        # Smooth over 3 samples before checking minimum — a real struggling pump shows a
+        # sustained drop, not a single-sample noise spike.
+        rate = rate.rolling(3, min_periods=2).mean()
+
+        # Null out gear change windows — transient rail crash during a shift is not HPFP failure.
+        gc_mask = state.gear_change_mask.reindex(rate.index, fill_value=False)
+        rate = rate.where(~gc_mask, other=float("nan"))
+
         min_rate = rate.min()
         if pd.notna(min_rate) and min_rate < -self.config.rail_drop_rate_psi_per_s:
             _rate_idx = rate.idxmin()
@@ -770,7 +798,17 @@ class B58DiagnosticEngine:
         adv_col = self.map["timing_adv"]
         if adv_col not in self.cols:
             return
-        adv = pd.to_numeric(self.prime_log[adv_col], errors="coerce").dropna()
+
+        # Exclude spool-up: normal ECU transition from cruise timing to WOT timing
+        # looks identical to a retard event at the start of every pull.
+        rpm = pd.to_numeric(self.prime_log[self.map["rpm"]], errors="coerce")
+        post_spool_mask = rpm > self.config.post_spool_rpm
+        if not post_spool_mask.any():
+            return
+
+        adv = pd.to_numeric(
+            self.prime_log.loc[post_spool_mask, adv_col], errors="coerce"
+        ).dropna()
         if len(adv) < 4:
             return
 
@@ -782,6 +820,11 @@ class B58DiagnosticEngine:
 
         # Max retard over any 3-sample rolling window
         rolling_drop = adv.rolling(3).apply(lambda w: w.iloc[0] - w.iloc[-1], raw=False)
+
+        # Null out gear change windows — timing collapses at a shift are not knock events.
+        gc_mask = state.gear_change_mask.reindex(rolling_drop.index, fill_value=False)
+        rolling_drop = rolling_drop.where(~gc_mask, other=float("nan"))
+
         max_retard = rolling_drop.max()
 
         if pd.notna(max_retard) and max_retard > self.config.timing_retard_event_deg:
@@ -821,6 +864,10 @@ class B58DiagnosticEngine:
 
         if mid_delta.empty:
             return
+
+        # Null out gear change windows — AFR spike during a shift is a transmission artifact.
+        gc_mask = state.gear_change_mask.reindex(mid_delta.index, fill_value=False)
+        mid_delta = mid_delta.where(~gc_mask, other=float("nan"))
 
         max_lean = mid_delta.max()
         if max_lean > self.config.afr_lean_swing_delta:
@@ -1170,8 +1217,16 @@ class B58DiagnosticEngine:
         actual = pd.to_numeric(self.prime_log[m["afr_actual"]], errors="coerce")
         rpm = pd.to_numeric(self.prime_log[m["rpm"]], errors="coerce")
 
-        # Require post-spool RPM to exclude spool-up lean samples
-        high_throttle_mask = (throttle > 95) & (rpm > self.config.post_spool_rpm)
+        # Skip the first half of the post-spool window — AFR is naturally lean during the
+        # enrichment ramp as the fueling system catches up to peak demand. The ramp length
+        # varies by stage, boost, and E-content, so a fixed RPM floor is always wrong for
+        # some car. The second half is always steady-state regardless of when spool completes.
+        post_spool_idx = self.prime_log.index[rpm > self.config.post_spool_rpm]
+        if len(post_spool_idx) < 6:
+            return
+        steady_start = post_spool_idx[len(post_spool_idx) // 2]
+        gc_aligned = state.gear_change_mask.reindex(self.prime_log.index, fill_value=False)
+        high_throttle_mask = (throttle > 95) & (self.prime_log.index >= steady_start) & ~gc_aligned
         if not high_throttle_mask.any():
             return
 
@@ -1266,6 +1321,20 @@ class B58DiagnosticEngine:
                     "Watch for progression across logs.\n\n"
                     "**Plain English:** Fuel pressure is lower than normal for this car and falls "
                     "quickly when the engine works hard. Worth watching before it becomes a bigger problem."
+                ),
+            ))
+
+        elif "rail_drop_rate_b" in f:
+            state.diagnosis.append(Alert(
+                flag="dx_rail_pressure_watch",
+                severity=AlertSeverity.MINOR,
+                message=(
+                    "**Fuel Rail Under Load — Watch (Pillar B):** Rail pressure dropped at an "
+                    "elevated rate during WOT, but without a hard crash or corroborating "
+                    "cross-parameter signal. May be normal variation on this hardware. Monitor "
+                    "across additional logs — if the pattern recurs or worsens, inspect the HPFP.\n\n"
+                    "**Plain English:** Fuel pressure fell off quickly at some point in the pull, "
+                    "but nothing confirms a real problem yet. Keep logging and watch the trend."
                 ),
             ))
 
@@ -1495,15 +1564,30 @@ class B58DiagnosticEngine:
                 ),
             ))
 
+        # ── Catch-all: alerts present but no synthesis branch matched ────────
+        if state.alerts and not state.diagnosis:
+            state.diagnosis.append(Alert(
+                flag="dx_unresolved",
+                severity=AlertSeverity.INFO,
+                message=(
+                    "**No Root Cause Identified:** Individual signals were flagged but no "
+                    "corroborating pattern emerged across pillars. This may be a first-occurrence "
+                    "artifact — compare against future logs before drawing conclusions.\n\n"
+                    "**Plain English:** Something looked off, but the data doesn't point to a "
+                    "clear cause. Review the individual findings above and check again on the next pull."
+                ),
+            ))
+
         # ── Clean bill of health ──────────────────────────────────────────────
         if not state.diagnosis and not state.alerts:
             state.diagnosis.append(Alert(
                 flag="dx_clean",
                 severity=AlertSeverity.INFO,
                 message=(
-                    "**Clean Bill of Health:** Hardware is happy, fuel pressure is stable, "
-                    "and timing is clean. The car is running exactly as your tuner intended.\n\n"
-                    "**Plain English:** Nothing wrong — no issues found across any check."
+                    "**Clean Bill of Health — No Issues Found:** Hardware is happy, fuel pressure "
+                    "is stable, and timing is clean. The car is running exactly as your tuner intended.\n\n"
+                    "**Plain English:** Nothing wrong. No issues found across any check — this is "
+                    "what a healthy pull looks like."
                 ),
             ))
 

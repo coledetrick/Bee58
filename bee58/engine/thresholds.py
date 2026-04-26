@@ -55,6 +55,14 @@ class ThresholdConfig:
     min_pull_duration_seconds: float = 1.0   # discard pulls shorter than this
     min_pull_rpm: int = 2000                 # discard pulls that never exceed this RPM
 
+    # Boost deficit check floor — boost can't realistically be on target until turbo fully builds;
+    # first post-spool samples show transient deficit that looks like a leak but isn't.
+    boost_check_min_rpm: float = 4000.0
+
+    # Gear change detection — sudden RPM drop while pedal stays floored
+    gear_change_rpm_drop: float = 200.0      # RPM/sample drop that identifies a gear change
+    gear_change_recovery_rows: int = 5       # rows after the drop to exclude from rate/lean checks
+
     # ── Dynamic detection (Pillar A — intra-log statistical normalization) ──────
     baseline_sigma: float = 2.0          # σ from non-WOT baseline before Pillar A flags
     baseline_min_rows: int = 5           # minimum non-WOT rows to attempt Pillar A

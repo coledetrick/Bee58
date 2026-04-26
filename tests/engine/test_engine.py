@@ -146,7 +146,12 @@ def test_clean_log_status_is_healthy():
 
 def test_clean_log_diagnosis_is_clean_bill_of_health():
     report = B58DiagnosticEngine(make_mhd_df()).run_analysis()
-    assert any("Clean Bill of Health" in d.message for d in report.diagnosis)
+    assert any(d.flag == "dx_clean" for d in report.diagnosis)
+
+
+def test_clean_log_no_issues_found_text():
+    report = B58DiagnosticEngine(make_mhd_df()).run_analysis()
+    assert any("No Issues Found" in d.message for d in report.diagnosis)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -633,11 +638,11 @@ def test_charge_air_timing_correlation_flagged():
 # ──────────────────────────────────────────────────────────────────────────────
 
 def test_timing_retard_b_no_false_positive_from_pull_end():
-    # Timing drops only in the last 2 rows (post-pull decel/gear change artifact).
-    # With 10% trim (2 rows for n=20), the rolling window never sees the drop.
+    # Timing drops only in the final row of the post-spool window (gear change / decel).
+    # 10% trim removes the last row of the post-spool series, so the window never sees it.
     n = 20
     timing = np.full(n, 15.0)
-    timing[-2:] = [5.0, 1.0]
+    timing[-1] = 1.0  # single end-of-pull artifact in last row only
     df = make_mhd_df(n=n, **{"Timing Cyl. 1 (*)": timing})
     results = B58DiagnosticEngine(df).run_analysis()
     all_flags = {a.flag for a in results.alerts} | {p.flag for p in results.performance_insights}
@@ -666,7 +671,7 @@ def test_boost_taper_high_rpm_not_flagged_as_leak():
 
 def test_wot_lean_excludes_spool_up_samples():
     # AFR lean only during spool-up (RPM < 3500). Post-spool AFR is fine.
-    # throttle_afr_lean_c should NOT fire because the RPM filter excludes these samples.
+    # throttle_afr_lean_c should NOT fire — lean samples are below post_spool_rpm.
     n = 20
     rpm = np.linspace(2000.0, 7000.0, n)
     afr = np.where(rpm < 3500.0, 15.0, 11.5)
@@ -677,6 +682,128 @@ def test_wot_lean_excludes_spool_up_samples():
             "AFR 1": afr,
             "AFR Target": np.full(n, 11.5),
         },
+    )
+    results = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in results.alerts}
+    assert "throttle_afr_lean_c" not in alert_flags
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Real-log false-positive regression tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_timing_retard_b_no_false_positive_from_spool_up():
+    # Timing drops from 20° to 12° at pull start (RPM < 3500 — ECU transitioning to WOT
+    # timing map, not a knock retard). With RPM guard, this should NOT fire.
+    n = 20
+    rpm = np.linspace(2000.0, 7000.0, n)
+    timing = np.full(n, 12.0)
+    timing[0:3] = [20.0, 16.0, 12.0]  # 8° drop in first 3 samples, all pre-spool
+    df = make_mhd_df(n=n, **{"RPM (rpm)": rpm, "Timing Cyl. 1 (*)": timing})
+    results = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in results.alerts}
+    assert "timing_retard_event_b" not in alert_flags
+
+
+def test_rail_drop_rate_b_no_false_positive_from_noise():
+    # Single 35 PSI dip in an otherwise stable 3000 PSI rail — measurement noise.
+    # After 3-sample rolling-mean smoothing the rate falls below the threshold.
+    n = 20
+    rail = np.full(n, 3000.0)
+    rail[10] = 2965.0  # single noisy sample
+    df = make_mhd_df(n=n, **{"Rail pressure mean 1 (PSI)": rail})
+    results = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in results.alerts}
+    assert "rail_drop_rate_b" not in alert_flags
+
+
+def test_wot_lean_c_no_false_positive_during_enrichment_ramp():
+    # AFR lean (13.5) only in the first half of the post-spool window (enrichment ramp).
+    # Second-half check excludes this window — AFR is 11.5 in the steady-state portion.
+    n = 20
+    rpm = np.linspace(2000.0, 7000.0, n)
+    # post-spool starts at index ~3 (3631 RPM); second half begins at index ~11 (5315 RPM).
+    # Lean samples placed at indices 3–8 (first-half enrichment ramp).
+    afr = np.where((rpm >= 3500) & (rpm < 5000), 13.5, 11.5)
+    df = make_mhd_df(n=n, **{"RPM (rpm)": rpm, "AFR 1": afr})
+    results = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in results.alerts}
+    assert "throttle_afr_lean_c" not in alert_flags
+
+
+def test_synthesis_rail_drop_rate_standalone_rca():
+    # Rail drops sharply but stays above hpfp_crash threshold — only rail_drop_rate_b fires.
+    # No LPFP starvation, no Pillar C divergence. Should produce dx_rail_pressure_watch.
+    n = 20
+    rail = np.full(n, 2200.0)
+    rail[10:] = 1950.0  # fast drop but 1950 > 1900 crash threshold
+    df = make_mhd_df(n=n, **{"Rail pressure mean 1 (PSI)": rail})
+    results = B58DiagnosticEngine(df).run_analysis()
+    assert any(d.flag == "dx_rail_pressure_watch" for d in results.diagnosis)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Gear change / spool-up false-positive regression tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_boost_deficit_during_spool_not_flagged_as_leak():
+    # Boost lags target during spool (< 4000 RPM) but is on target above 4000 RPM.
+    # boost_check_min_rpm=4000 means only post-4000 rows are checked — no boost_leak.
+    n = 30
+    rpm = np.linspace(2500.0, 7000.0, n)
+    boost_actual = np.where(rpm < 4000.0, 12.0, 20.0)
+    df = make_mhd_df(
+        n=n,
+        **{
+            "RPM (rpm)": rpm,
+            "Boost target (PSI)": np.full(n, 20.0),
+            "Boost (PSI)": boost_actual,
+        },
+    )
+    results = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in results.alerts}
+    assert "boost_leak" not in alert_flags
+
+
+def test_gear_change_suppresses_timing_retard_b():
+    # Timing drops 8° at a gear change (RPM drops 300 in one sample).
+    # gear_change_mask covers the event + recovery rows — timing_retard_event_b must not fire.
+    n = 30
+    rpm = np.linspace(3000.0, 7000.0, n)
+    rpm[15] = rpm[14] - 300.0
+    timing = np.full(n, 12.0)
+    timing[15:18] = [4.0, 6.0, 10.0]  # 8° drop at gear change, recovering over 3 rows
+    df = make_mhd_df(n=n, **{"RPM (rpm)": rpm, "Timing Cyl. 1 (*)": timing})
+    results = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in results.alerts}
+    assert "timing_retard_event_b" not in alert_flags
+
+
+def test_gear_change_suppresses_rail_drop_rate_b():
+    # Rail pressure crashes at a gear change (fast drop, still above hpfp_crash floor).
+    # gear_change_mask nulls the rate at the event — rail_drop_rate_b must not fire.
+    n = 30
+    rpm = np.linspace(3000.0, 7000.0, n)
+    rpm[15] = rpm[14] - 300.0
+    rail = np.full(n, 2200.0)
+    rail[15:17] = [1950.0, 2100.0]  # fast drop then partial recovery; 1950 > 1900 crash floor
+    df = make_mhd_df(n=n, **{"RPM (rpm)": rpm, "Rail pressure mean 1 (PSI)": rail})
+    results = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in results.alerts}
+    assert "rail_drop_rate_b" not in alert_flags
+
+
+def test_gear_change_suppresses_throttle_afr_lean_c():
+    # AFR spikes lean only during the gear change window (post-spool steady-state portion).
+    # gear_change_mask removes those rows — throttle_afr_lean_c must not fire.
+    n = 30
+    rpm = np.linspace(3000.0, 7000.0, n)
+    rpm[15] = rpm[14] - 300.0
+    afr = np.full(n, 11.5)
+    afr[15:17] = [14.0, 13.5]  # lean spike at gear change only
+    df = make_mhd_df(
+        n=n,
+        **{"RPM (rpm)": rpm, "AFR 1": afr, "AFR Target": np.full(n, 11.5)},
     )
     results = B58DiagnosticEngine(df).run_analysis()
     alert_flags = {a.flag for a in results.alerts}
