@@ -72,7 +72,7 @@ This installs:
 Verify the install:
 
 ```bash
-python -c "from app.engine import B58DiagnosticEngine; print('OK')"
+python -c "from bee58.engine import B58DiagnosticEngine; print('OK')"
 ```
 
 ---
@@ -103,7 +103,7 @@ From the `Bee58/` directory with the virtual environment active:
 pytest tests/ -v
 ```
 
-Expected output: **23 tests, all passing**. The `-v` flag shows each test name. If any test fails, the output will describe which assertion failed and what values were involved.
+Expected output: **53 tests, all passing**. The `-v` flag shows each test name. If any test fails, the output will describe which assertion failed and what values were involved.
 
 To run a single test file:
 
@@ -125,7 +125,7 @@ If you want to call the diagnostic engine in your own script without the Streaml
 
 ```python
 import pandas as pd
-from app.engine import B58DiagnosticEngine, ThresholdConfig
+from bee58.engine import B58DiagnosticEngine, ThresholdConfig
 
 # Load a CSV log
 df = pd.read_csv("my_mhd_log.csv")
@@ -165,7 +165,7 @@ if report.pull_comparison:
 `thresholds.py` ships four community-derived starting-point configs:
 
 ```python
-from app.engine.thresholds import STAGE1, STAGE2, E30, E50
+from bee58.engine.thresholds import STAGE1, STAGE2, E30, E50
 
 engine = B58DiagnosticEngine(df, config=STAGE2)
 ```
@@ -181,7 +181,7 @@ These are starting points, not gospel — validate against real logs for your sp
 
 ### ThresholdConfig Reference
 
-`ThresholdConfig` (in `app/engine/thresholds.py`) exposes every numeric limit the engine uses, organized by pillar:
+`ThresholdConfig` (in `bee58/engine/thresholds.py`) exposes every numeric limit the engine uses, organized by pillar:
 
 | Group | Key fields |
 |-------|-----------|
@@ -198,15 +198,18 @@ Pass a customized instance at construction to override any subset of these.
 
 ```
 Bee58/
-├── app/engine/              # The diagnostic engine (Phase 1 complete)
+├── bee58/engine/            # The diagnostic engine (Phase 1 complete)
 │   ├── __init__.py          # Exports B58DiagnosticEngine, ThresholdConfig
 │   ├── rules.py             # B58DiagnosticEngine — ABC pillar detection, WOT extraction, scoring
 │   ├── models.py            # Pydantic schemas: Alert, DiagnosticReport, AlertSeverity, PullSummary
 │   └── thresholds.py        # ThresholdConfig dataclass + STAGE1/STAGE2/E30/E50 presets
+├── lambdas/                 # Lambda handlers (Phase 2)
+├── frontend/                # Static HTML/JS site (Phase 2)
+├── infra/                   # Terraform modules and environments (Phase 2)
 ├── localdev/
-│   └── app.py               # Streamlit UI (reference implementation)
+│   └── app.py               # Streamlit UI (local development only)
 ├── tests/engine/
-│   └── test_engine.py       # 23 pytest tests with synthetic DataFrames
+│   └── test_engine.py       # 53 pytest tests with synthetic DataFrames
 ├── docs/                    # Architecture docs for Phases 2–5
 └── pyproject.toml           # Package metadata and dependency declarations
 ```
@@ -248,7 +251,7 @@ These are set via Terraform, not manually:
 
 ## Troubleshooting
 
-**`ModuleNotFoundError: No module named 'app'`**
+**`ModuleNotFoundError: No module named 'bee58'`**
 Run `pip install -e .` from the `Bee58/` directory. The `pyproject.toml` configures `pythonpath = ["."]` for pytest, but scripts run outside pytest need the package installed.
 
 **Streamlit shows a blank page after uploading**

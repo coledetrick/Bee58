@@ -237,14 +237,6 @@ app/
 - [ ] Terraform plan as PR check
 - [ ] Manual approval gate for prod deploy
 
-### Phase 5 — AI Narrative Diagnosis (product differentiator)
-- [ ] Clean transcript corpus (normalize acronyms, strip filler, fix auto-caption errors)
-- [ ] Embed transcripts → vector store (Bedrock Knowledge Base or OpenSearch Serverless)
-- [ ] Analysis Lambda calls Claude API with structured rule findings + retrieved context
-- [ ] Claude generates plain-English narrative diagnosis targeted at the nervous first-tune user
-- [ ] Output includes: plain-English explanation per finding, severity lane (stop/mention/normal), "what to send your tuner" pre-written message
-- [ ] Rule engine findings ground the Claude output — Claude interprets, rules decide
-
 ---
 
 ## Key Learning Outcomes by Phase
@@ -255,7 +247,6 @@ app/
 | 2 | Serverless architecture, event-driven design, IAM least-privilege, presigned URLs, DynamoDB, API Gateway CORS, CloudFront |
 | 3 | Structured logging, custom metrics, observability mindset |
 | 4 | Full CI/CD pipeline, IaC in automation, environment promotion |
-| 5 | RAG architecture, Claude API integration, prompt engineering, vector stores |
 
 ---
 
@@ -275,8 +266,6 @@ app/
 
 **Build "donate your log" into the tool**: Opt-in checkbox at upload. Anonymized logs with consent are the long-term validation flywheel.
 
-**For AI training corpus**: YouTube transcript scraper is already built. Transcripts need a cleaning pass before embedding — auto-captions garble technical terms ("HPFP" → "H P F P", units inconsistently transcribed). Clean before chunking.
-
 ---
 
 ## Resume Bullet Points (target)
@@ -285,4 +274,3 @@ app/
 - *Implemented presigned S3 URL upload pattern, decoupling file ingestion from API Gateway payload constraints*
 - *Built CI/CD pipeline with GitHub Actions: automated testing, Docker builds, Terraform plan checks, and environment-gated deployments*
 - *Instrumented Lambda functions with structured CloudWatch logging and custom metrics dashboard for operational visibility*
-- *Integrated Claude API with RAG over community tuning knowledge base to generate plain-English diagnostic narratives grounded in rule-engine findings*

@@ -102,7 +102,7 @@ It's a useful reference during the transition and is kept until the first succes
 
 2. **Timing advance check uses end-of-pull value**: See decision above. Worth revisiting once real logs are available.
 
-3. **Threshold values are research-derived**: The numbers in `ThresholdConfig` came from forum research and documented tuner guidance, not from a validated dataset of real logs. Some users will get false positives (stock HPFP on a built motor may legitimately run lower rail pressure). The "donate your log" flow planned for Phase 5 will build the dataset needed to validate these.
+3. **Threshold values are research-derived**: The numbers in `ThresholdConfig` came from forum research and documented tuner guidance, not from a validated dataset of real logs. Some users will get false positives (stock HPFP on a built motor may legitimately run lower rail pressure). A "donate your log" opt-in could build the dataset needed to validate these over time.
 
 4. **The `conservative_timing` insight is INFO (no score deduction)**: This was a judgment call — a tune that's playing it safe isn't a problem, just a note. If the user wants to be more aggressive they can discuss with their tuner. Reconsider if users find it confusing.
 
@@ -129,7 +129,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Expected: **23 tests, all passing**.
+Expected: **53 tests, all passing**.
 
 ### Run Streamlit app
 
@@ -146,26 +146,21 @@ Upload a CSV log exported from MHD or BM3. The app will detect the platform, fin
 
 ```
 Bee58/
-├── app/
+├── bee58/
 │   ├── __init__.py
 │   └── engine/
 │       ├── __init__.py       ← exports B58DiagnosticEngine, ThresholdConfig
 │       ├── thresholds.py     ← ThresholdConfig dataclass
 │       ├── models.py         ← Pydantic result schema
 │       └── rules.py          ← diagnostic engine
-├── docs/                     ← architecture blueprints (untouched)
+├── docs/                     ← architecture blueprints
 ├── localdev/
-│   ├── app.py                ← Streamlit UI (fixed)
-│   ├── rules.py              ← OLD — safe to delete after tests pass
-│   └── requirements.txt      ← updated
-├── scripts/
-│   └── GetVideoTranscripts   ← YouTube transcript scraper for Phase 5 RAG
+│   └── app.py                ← Streamlit UI
 ├── tests/
 │   └── engine/
-│       └── test_engine.py    ← 23 pytest tests
-├── initial_research.md       ← project spec and roadmap
+│       └── test_engine.py    ← 53 pytest tests
 ├── pyproject.toml            ← package config + pytest path setup
-└── software_notes.md         ← this file
+└── docs/notes/software_notes.md  ← this file
 ```
 
 ## What's Next (Phase 2)

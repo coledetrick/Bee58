@@ -38,7 +38,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -e ".[dev]"
-      - run: ruff check app/
+      - run: ruff check bee58/
       - run: pytest tests/ -v --tb=short
 ```
 
@@ -65,9 +65,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t bee58-analysis:latest -f app/lambdas/analysis/Dockerfile .
-      - run: docker build -t bee58-upload:latest -f app/lambdas/upload/Dockerfile .
-      - run: docker build -t bee58-results:latest -f app/lambdas/results/Dockerfile .
+      - run: docker build -t bee58-analysis:latest -f lambdas/analysis/Dockerfile .
+      - run: docker build -t bee58-upload:latest -f lambdas/upload/Dockerfile .
+      - run: docker build -t bee58-results:latest -f lambdas/results/Dockerfile .
 ```
 
 This is a build-only check — no push to ECR until the deploy workflow in Phase 4. Catches `Dockerfile` issues early without needing AWS credentials.
@@ -144,7 +144,7 @@ jobs:
       - name: Build and push Lambda images to ECR
         run: |
           aws ecr get-login-password | docker login --username AWS --password-stdin $ECR_REGISTRY
-          docker build -t $ECR_REGISTRY/bee58-analysis:$GITHUB_SHA -f app/lambdas/analysis/Dockerfile .
+          docker build -t $ECR_REGISTRY/bee58-analysis:$GITHUB_SHA -f lambdas/analysis/Dockerfile .
           docker push $ECR_REGISTRY/bee58-analysis:$GITHUB_SHA
           # repeat for upload and results
       - name: Terraform apply (dev)
@@ -154,8 +154,8 @@ jobs:
             -var="image_tag=$GITHUB_SHA"
       - name: Sync frontend to S3 + invalidate CloudFront
         run: |
-          echo "window.BEE58_CONFIG = { apiBase: '${API_BASE}' };" > app/frontend/config.js
-          aws s3 sync app/frontend/ s3://bee58-frontend-dev/
+          echo "window.BEE58_CONFIG = { apiBase: '${API_BASE}' };" > frontend/config.js
+          aws s3 sync frontend/ s3://bee58-frontend-dev/
           aws cloudfront create-invalidation --distribution-id $CF_DIST_ID --paths "/*"
 
   deploy-prod:

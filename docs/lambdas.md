@@ -1,6 +1,6 @@
 # Lambda Functions
 
-**Location**: `app/lambdas/`  
+**Location**: `lambdas/`  
 **Phase**: 2 (Cloud Architecture)
 
 ---
@@ -10,7 +10,7 @@
 Three Lambda functions implement the async pipeline. Each has a narrow, single responsibility. No function talks directly to another — they communicate through S3 events and DynamoDB state.
 
 ```
-app/lambdas/
+lambdas/
 ├── upload/     # POST /upload — returns job_id + presigned S3 URL
 ├── analysis/   # S3-triggered — runs engine, writes result to DynamoDB
 └── results/    # GET /result/{job_id} — reads DynamoDB, returns status + report
@@ -167,11 +167,11 @@ Set via Terraform `aws_lambda_function.environment`. Never hardcode.
 
 Each Lambda is a separate deployment package. Shared code (the engine package) is a Lambda Layer — one layer, three functions reference it. Avoids duplicating the engine in each zip.
 
-Lambda layer structure:
+Lambda layer structure (install the `bee58` package into the layer):
 ```
 layer/
 └── python/
-    └── app/
+    └── bee58/
         └── engine/
             ├── __init__.py
             ├── rules.py
