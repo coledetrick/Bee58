@@ -883,3 +883,33 @@ def test_rail_req_delta_b_no_false_positive():
     df["Rail pressure req. (PSI)"] = np.full(20, 2000.0)
     flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
     assert "rail_req_delta_b" not in flags
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Cylinder correction onset analysis (2 tests)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_timing_pull_isolated_early_onset():
+    # Cyl4 corrects at -4° from the very first row — onset_fraction ≈ 0 (early).
+    # Message should identify consistent pull / possible injector imbalance.
+    df = make_mhd_df(n=20)
+    df["Cyl4 Timing Cor (*)"] = np.full(20, -4.0)
+    report = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in report.alerts}
+    assert "timing_pull" in alert_flags
+    timing_alert = next(a for a in report.alerts if a.flag == "timing_pull")
+    assert "injector" in timing_alert.message.lower()
+
+
+def test_timing_pull_isolated_late_onset():
+    # Cyl4 corrects at -4° only for the last 5 rows (upper quarter of RPM range).
+    # onset_fraction ≈ 0.75 → load-dependent message.
+    df = make_mhd_df(n=20)
+    cyl4 = np.zeros(20)
+    cyl4[15:] = -4.0  # only rows 15-19, RPM ~6500-7000 out of 3000-7000 range
+    df["Cyl4 Timing Cor (*)"] = cyl4
+    report = B58DiagnosticEngine(df).run_analysis()
+    alert_flags = {a.flag for a in report.alerts}
+    assert "timing_pull" in alert_flags
+    timing_alert = next(a for a in report.alerts if a.flag == "timing_pull")
+    assert "load-dependent" in timing_alert.message.lower()

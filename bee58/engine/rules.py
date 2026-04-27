@@ -437,15 +437,60 @@ class B58DiagnosticEngine:
         min_val = timing.min().min()
         if min_val < self.config.min_timing_correction:
             worst_row = timing.min(axis=1).idxmin()
-            worst_cyl = "".join(filter(str.isdigit, timing.loc[worst_row].idxmin()))
+            worst_col = timing.loc[worst_row].idxmin()
+            worst_cyl = "".join(filter(str.isdigit, worst_col))
             affected_count = sum(
                 1 for col in self.engine_timing_cols
                 if timing[col].min() < self.config.min_timing_correction
             )
             if affected_count == 1:
-                cyl_context = f" — isolated to Cyl {worst_cyl}, others clean"
+                rpm_series = pd.to_numeric(
+                    self.prime_log.loc[timing.index, self.map["rpm"]], errors="coerce"
+                )
+                pulling_rpms = rpm_series[
+                    timing[worst_col] < self.config.min_timing_correction
+                ].dropna()
+                rpm_min, rpm_max = rpm_series.min(), rpm_series.max()
+                rpm_range = rpm_max - rpm_min
+                if not pulling_rpms.empty and rpm_range > 0:
+                    onset_rpm = pulling_rpms.min()
+                    onset_fraction = (onset_rpm - rpm_min) / rpm_range
+                    if onset_fraction < 0.5:
+                        cyl_context = (
+                            f" — isolated to Cyl {worst_cyl}, corrections from "
+                            f"{int(onset_rpm)} RPM (consistent pull, possible injector imbalance)"
+                        )
+                        beginner_note = (
+                            f"Cylinder {worst_cyl} was pulling timing from early in the pull "
+                            f"and kept pulling — this is a steady-state deficit on one cylinder. "
+                            f"A fuel quality problem usually affects all cylinders; this pattern "
+                            f"can indicate an injector imbalance on that cylinder."
+                        )
+                    else:
+                        cyl_context = (
+                            f" — isolated to Cyl {worst_cyl}, onset at {int(onset_rpm)} RPM "
+                            f"(load-dependent, likely fuel or octane at peak demand)"
+                        )
+                        beginner_note = (
+                            f"Cylinder {worst_cyl}'s timing correction only appeared at higher "
+                            f"RPM and load — the tune is pushing past what the fuel can support "
+                            f"at peak cylinder pressure. Better fuel or a lower-timing map is "
+                            f"the likely fix."
+                        )
+                else:
+                    cyl_context = f" — isolated to Cyl {worst_cyl}, others clean"
+                    beginner_note = (
+                        f"Cylinder {worst_cyl} had its timing pulled back significantly — "
+                        "the ECU detected borderline knock and backed off to protect the engine. "
+                        "Other cylinders were clean."
+                    )
             else:
                 cyl_context = f" — affects {affected_count} cylinders"
+                beginner_note = (
+                    f"Cylinder {worst_cyl} had its timing pulled back significantly — "
+                    "the ECU detected borderline knock and backed off to protect the engine. "
+                    f"{affected_count} cylinders were affected."
+                )
             _wr_rpm = pd.to_numeric(self.prime_log.loc[worst_row, self.map["rpm"]], errors="coerce")
             _wr_range = (int(_wr_rpm), int(_wr_rpm)) if pd.notna(_wr_rpm) else None
             state.flags.add("timing_pull")
@@ -453,12 +498,7 @@ class B58DiagnosticEngine:
                 flag="timing_pull",
                 severity=AlertSeverity.MINOR,
                 message=f"Timing Pull: {round(min_val, 1)}° on Cyl {worst_cyl}{cyl_context}.",
-                beginner_message=(
-                    f"Cylinder {worst_cyl} had its timing pulled back significantly — "
-                    "the ECU detected borderline knock and backed off to protect the engine."
-                    + (" Other cylinders were clean." if affected_count == 1 else
-                       f" {affected_count} cylinders were affected.")
-                ),
+                beginner_message=beginner_note,
                 rpm_range=_wr_range,
             ))
 
