@@ -109,6 +109,7 @@ class B58DiagnosticEngine:
                 "load_actual":  "Load act. (%)",
                 "timing_adv":   "Timing Cyl. 1 (*)",
                 "charge_air":   "Charge air temp. (*F)",
+                "rail_req":     "Rail pressure req. (PSI)",
             }
         return {
             "pedal":        "Accel. Pedal[%]",
@@ -157,6 +158,20 @@ class B58DiagnosticEngine:
             end = min(pos + recovery + 1, len(self.prime_log))
             mask.iloc[pos:end] = True
         return mask
+
+    def _boost_developed_mask(self, data: pd.DataFrame) -> pd.Series:
+        """
+        Returns True for rows where boost has reached the developed threshold
+        (boost_actual >= fraction * boost_target). Excludes spool-up transients.
+        Falls back to all-True if either boost column is absent.
+        """
+        boost_col = self.map["boost_actual"]
+        target_col = self.map["boost_target"]
+        if boost_col not in self.cols or target_col not in self.cols:
+            return pd.Series(True, index=data.index)
+        actual = pd.to_numeric(data[boost_col], errors="coerce")
+        target = pd.to_numeric(data[target_col], errors="coerce")
+        return actual >= self.config.boost_developed_fraction * target
 
     def _extract_prime_wot_pull(self) -> pd.DataFrame:
         """
@@ -256,6 +271,7 @@ class B58DiagnosticEngine:
 
         # Pillar B: rate-of-change / single-pull delta detection
         self._check_rail_drop_rate_b(state)
+        self._check_rail_req_delta_b(state)
         self._check_timing_retard_events_b(state)
         self._check_afr_lean_swing_b(state)
         self._check_boost_mid_pull_drop_b(state)
@@ -422,16 +438,26 @@ class B58DiagnosticEngine:
         if min_val < self.config.min_timing_correction:
             worst_row = timing.min(axis=1).idxmin()
             worst_cyl = "".join(filter(str.isdigit, timing.loc[worst_row].idxmin()))
+            affected_count = sum(
+                1 for col in self.engine_timing_cols
+                if timing[col].min() < self.config.min_timing_correction
+            )
+            if affected_count == 1:
+                cyl_context = f" — isolated to Cyl {worst_cyl}, others clean"
+            else:
+                cyl_context = f" — affects {affected_count} cylinders"
             _wr_rpm = pd.to_numeric(self.prime_log.loc[worst_row, self.map["rpm"]], errors="coerce")
             _wr_range = (int(_wr_rpm), int(_wr_rpm)) if pd.notna(_wr_rpm) else None
             state.flags.add("timing_pull")
             state.alerts.append(Alert(
                 flag="timing_pull",
                 severity=AlertSeverity.MINOR,
-                message=f"Timing Pull: {round(min_val, 1)}° on Cyl {worst_cyl}.",
+                message=f"Timing Pull: {round(min_val, 1)}° on Cyl {worst_cyl}{cyl_context}.",
                 beginner_message=(
                     f"Cylinder {worst_cyl} had its timing pulled back significantly — "
                     "the ECU detected borderline knock and backed off to protect the engine."
+                    + (" Other cylinders were clean." if affected_count == 1 else
+                       f" {affected_count} cylinders were affected.")
                 ),
                 rpm_range=_wr_range,
             ))
@@ -579,7 +605,10 @@ class B58DiagnosticEngine:
         wgdc_col = self.map["wgdc"]
         if wgdc_col not in self.cols:
             return
-        wgdc = pd.to_numeric(self.prime_log[wgdc_col], errors="coerce")
+        developed = self._boost_developed_mask(self.prime_log)
+        wgdc = pd.to_numeric(self.prime_log.loc[developed, wgdc_col], errors="coerce")
+        if wgdc.empty:
+            return
         if wgdc.max() > self.config.max_wgdc_pct:
             _sat_rpms = pd.to_numeric(
                 self.prime_log.loc[wgdc[wgdc >= self.config.max_wgdc_pct].index, self.map["rpm"]],
@@ -590,9 +619,10 @@ class B58DiagnosticEngine:
             state.insights.append(Alert(
                 flag="wgdc_saturation",
                 severity=AlertSeverity.INFO,
-                message="🐌 Turbo Headroom: WGDC at 100%. Turbo is at its physical limit.",
+                message="🐌 Turbo Headroom: WGDC at 100% under developed boost. Turbo is at its physical limit.",
                 beginner_message=(
-                    "The wastegate is fully closed — the turbo is working as hard as it physically can. "
+                    "With boost fully built, the wastegate is still fully closed — the turbo is working "
+                    "as hard as it physically can at this boost level. "
                     "If boost is still short of target, there's a leak. If boost is on target, the turbo is maxed."
                 ),
                 rpm_range=_sat_range,
@@ -673,8 +703,12 @@ class B58DiagnosticEngine:
         m = self.map
         if m["load_target"] not in self.cols or m["load_actual"] not in self.cols:
             return
-        target = pd.to_numeric(self.prime_log[m["load_target"]], errors="coerce")
-        actual = pd.to_numeric(self.prime_log[m["load_actual"]], errors="coerce")
+        developed = self._boost_developed_mask(self.prime_log)
+        dev_data = self.prime_log[developed]
+        if dev_data.empty:
+            return
+        target = pd.to_numeric(dev_data[m["load_target"]], errors="coerce")
+        actual = pd.to_numeric(dev_data[m["load_actual"]], errors="coerce")
         miss = target - actual
         if miss.max() > self.config.max_load_miss_pct:
             _miss_idx = miss.idxmax()
@@ -684,10 +718,10 @@ class B58DiagnosticEngine:
             state.insights.append(Alert(
                 flag="load_miss",
                 severity=AlertSeverity.INFO,
-                message="Load Miss: Engine missed load target by >15%. Power is reduced.",
+                message="Load Miss: Engine missed load target by >15% during developed boost. Power is reduced.",
                 beginner_message=(
-                    "The engine didn't reach the power level it was aiming for — "
-                    "something is preventing it from filling the cylinders fully."
+                    "Once boost was fully built, the engine still didn't reach the power level it was aiming for — "
+                    "something is preventing it from filling the cylinders completely."
                 ),
                 rpm_range=_miss_range,
             ))
@@ -764,16 +798,24 @@ class B58DiagnosticEngine:
         with np.errstate(divide="ignore", invalid="ignore"):
             rate = d_rail / dt.replace(0, np.nan)
 
-        # Smooth over 3 samples before checking minimum — a real struggling pump shows a
-        # sustained drop, not a single-sample noise spike.
-        rate = rate.rolling(3, min_periods=2).mean()
+        # Smooth over 5 samples — wider window suppresses brief oscillations while still
+        # catching a genuine pump struggle that persists across multiple samples.
+        rate = rate.rolling(5, min_periods=3).mean()
 
         # Null out gear change windows — transient rail crash during a shift is not HPFP failure.
         gc_mask = state.gear_change_mask.reindex(rate.index, fill_value=False)
         rate = rate.where(~gc_mask, other=float("nan"))
 
-        min_rate = rate.min()
-        if pd.notna(min_rate) and min_rate < -self.config.rail_drop_rate_psi_per_s:
+        # Require the rate to be sustained below threshold for at least N consecutive samples.
+        # A single brief excursion is noise; a real struggling pump stays below threshold.
+        threshold = self.config.rail_drop_rate_psi_per_s
+        n_req = self.config.rail_drop_rate_min_samples
+        below = rate < -threshold
+        sustained = below.rolling(n_req, min_periods=n_req).min().fillna(0) == 1
+        qualifying_rate = rate.where(sustained)
+
+        min_rate = qualifying_rate.min()
+        if pd.notna(min_rate) and min_rate < -threshold:
             _rate_idx = rate.idxmin()
             _rate_rpm = pd.to_numeric(self.prime_log.loc[_rate_idx, self.map["rpm"]], errors="coerce")
             _rate_range = (int(_rate_rpm), int(_rate_rpm)) if pd.notna(_rate_rpm) else None
@@ -845,6 +887,60 @@ class B58DiagnosticEngine:
                 ),
                 rpm_range=_retard_range,
             ))
+
+    def _check_rail_req_delta_b(self, state: _AnalysisState) -> None:
+        """Pillar B: rail pressure persistently below requirement during developed boost.
+
+        Catches demand-limited pump behavior that a rate check misses — rail may
+        decline slowly or hold steady but below what the ECU is asking for.
+        """
+        m = self.map
+        rail_req_col = self.map.get("rail_req")
+        if not rail_req_col or rail_req_col not in self.cols or m["rail"] not in self.cols:
+            return
+
+        developed = self._boost_developed_mask(self.prime_log)
+        if not developed.any():
+            return
+
+        gc_mask = state.gear_change_mask.reindex(self.prime_log.index, fill_value=False)
+        analysis_mask = developed & ~gc_mask
+
+        rail = pd.to_numeric(self.prime_log.loc[analysis_mask, m["rail"]], errors="coerce")
+        req = pd.to_numeric(self.prime_log.loc[analysis_mask, rail_req_col], errors="coerce")
+        delta = rail - req  # negative = below requirement
+
+        if len(delta.dropna()) < self.config.rail_req_delta_min_samples:
+            return
+
+        below = delta < -self.config.rail_req_delta_psi
+        sustained = below.rolling(
+            self.config.rail_req_delta_min_samples,
+            min_periods=self.config.rail_req_delta_min_samples,
+        ).min().fillna(0) == 1
+
+        if not sustained.any():
+            return
+
+        worst_idx = delta.where(sustained).idxmin()
+        worst_deficit = abs(float(delta.loc[worst_idx]))
+        _req_rpm = pd.to_numeric(self.prime_log.loc[worst_idx, m["rpm"]], errors="coerce")
+        _req_range = (int(_req_rpm), int(_req_rpm)) if pd.notna(_req_rpm) else None
+        state.flags.add("rail_req_delta_b")
+        state.alerts.append(Alert(
+            flag="rail_req_delta_b",
+            severity=AlertSeverity.MAJOR,
+            message=(
+                f"Rail Pressure Deficit (Pillar B): Rail ran {round(worst_deficit)} PSI below "
+                f"requirement for {self.config.rail_req_delta_min_samples}+ consecutive samples "
+                f"during developed boost — pump is not keeping up with demand."
+            ),
+            beginner_message=(
+                "The fuel pump couldn't deliver what the engine was asking for once boost was fully built. "
+                "This isn't a momentary blip — it persisted long enough to confirm the pump is struggling."
+            ),
+            rpm_range=_req_range,
+        ))
 
     def _check_afr_lean_swing_b(self, state: _AnalysisState) -> None:
         """Pillar B: AFR swings lean mid-pull — fueling system can't sustain demand."""
@@ -1267,7 +1363,7 @@ class B58DiagnosticEngine:
 
         # ── Fuel pressure / HPFP ─────────────────────────────────────────────
         if "hpfp_crash" in f and "lpfp_starvation" in f:
-            n = sum(["rail_deviation_a" in f, "rail_drop_rate_b" in f, "boost_rail_divergence_c" in f])
+            n = sum(["rail_deviation_a" in f, "rail_drop_rate_b" in f, "rail_req_delta_b" in f, "boost_rail_divergence_c" in f])
             conf = _confidence_label(n)
             state.diagnosis.append(Alert(
                 flag="dx_cascading_fuel_failure",
@@ -1283,7 +1379,7 @@ class B58DiagnosticEngine:
             ))
 
         elif "hpfp_crash" in f:
-            n = sum(["rail_deviation_a" in f, "rail_drop_rate_b" in f, "boost_rail_divergence_c" in f])
+            n = sum(["rail_deviation_a" in f, "rail_drop_rate_b" in f, "rail_req_delta_b" in f, "boost_rail_divergence_c" in f])
             conf = _confidence_label(n)
             state.diagnosis.append(Alert(
                 flag="dx_hpfp_limit",
@@ -1324,6 +1420,22 @@ class B58DiagnosticEngine:
                 ),
             ))
 
+        elif "rail_drop_rate_b" in f and "rail_req_delta_b" in f:
+            state.diagnosis.append(Alert(
+                flag="dx_hpfp_demand_limited",
+                severity=AlertSeverity.MINOR,
+                message=(
+                    "**HPFP Demand-Limited — Early Warning (Pillar B×2):** Rail pressure is "
+                    "both dropping at an elevated rate and running persistently below the ECU's "
+                    "requirement. Two independent Pillar B checks agree — this is more than "
+                    "noise. The pump is not keeping up with demand. Monitor across logs; an "
+                    "upgrade may be warranted before a hard crash occurs.\n\n"
+                    "**Plain English:** Your fuel pump is being outrun by what the engine needs. "
+                    "It hasn't failed yet, but two separate pressure checks both flag it. "
+                    "Worth watching closely."
+                ),
+            ))
+
         elif "rail_drop_rate_b" in f:
             state.diagnosis.append(Alert(
                 flag="dx_rail_pressure_watch",
@@ -1335,6 +1447,21 @@ class B58DiagnosticEngine:
                     "across additional logs — if the pattern recurs or worsens, inspect the HPFP.\n\n"
                     "**Plain English:** Fuel pressure fell off quickly at some point in the pull, "
                     "but nothing confirms a real problem yet. Keep logging and watch the trend."
+                ),
+            ))
+
+        elif "rail_req_delta_b" in f:
+            state.diagnosis.append(Alert(
+                flag="dx_rail_req_deficit",
+                severity=AlertSeverity.MINOR,
+                message=(
+                    "**Fuel Rail Below Requirement — Watch (Pillar B):** Rail pressure ran "
+                    "persistently below the ECU's fuel requirement during developed boost, "
+                    "without a hard crash or rapid drop. The pump is meeting demand on the edge. "
+                    "Monitor across additional logs.\n\n"
+                    "**Plain English:** Your fuel rail pressure stayed consistently below what "
+                    "the ECU was asking for. It's not a crisis yet, but the pump is running close "
+                    "to its limit. Keep logging to see if it gets worse."
                 ),
             ))
 

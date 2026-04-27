@@ -63,6 +63,9 @@ class ThresholdConfig:
     gear_change_rpm_drop: float = 200.0      # RPM/sample drop that identifies a gear change
     gear_change_recovery_rows: int = 5       # rows after the drop to exclude from rate/lean checks
 
+    # Boost-developed window — exclude spool-up from checks that require stable boost
+    boost_developed_fraction: float = 0.90  # boost_actual / boost_target must exceed this
+
     # ── Dynamic detection (Pillar A — intra-log statistical normalization) ──────
     baseline_sigma: float = 2.0          # σ from non-WOT baseline before Pillar A flags
     baseline_min_rows: int = 5           # minimum non-WOT rows to attempt Pillar A
@@ -70,6 +73,12 @@ class ThresholdConfig:
     # ── Rate-of-change thresholds (Pillar B — delta detection) ──────────────────
     # Rail pressure drop rate during WOT ramp: PSI per second
     rail_drop_rate_psi_per_s: float = 200.0
+    # Consecutive smoothed samples that must remain below rate threshold before flagging
+    rail_drop_rate_min_samples: int = 2
+    # Rail below requirement by this many PSI, sustained, = demand-limited pump
+    rail_req_delta_psi: float = 150.0
+    # Samples the requirement deficit must persist to flag
+    rail_req_delta_min_samples: int = 5
     # Sudden timing retard within a 3-sample rolling window
     timing_retard_event_deg: float = 3.0
     # AFR lean excursion above target mid-pull

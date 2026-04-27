@@ -736,7 +736,7 @@ def test_synthesis_rail_drop_rate_standalone_rca():
     # No LPFP starvation, no Pillar C divergence. Should produce dx_rail_pressure_watch.
     n = 20
     rail = np.full(n, 2200.0)
-    rail[10:] = 1950.0  # fast drop but 1950 > 1900 crash threshold
+    rail[10:] = 1920.0  # fast drop but 1920 > 1900 crash threshold; large enough to clear rolling(5) average
     df = make_mhd_df(n=n, **{"Rail pressure mean 1 (PSI)": rail})
     results = B58DiagnosticEngine(df).run_analysis()
     assert any(d.flag == "dx_rail_pressure_watch" for d in results.diagnosis)
@@ -808,3 +808,78 @@ def test_gear_change_suppresses_throttle_afr_lean_c():
     results = B58DiagnosticEngine(df).run_analysis()
     alert_flags = {a.flag for a in results.alerts}
     assert "throttle_afr_lean_c" not in alert_flags
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Boost-developed window — spool-up exclusion (4 tests)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_wgdc_spool_only_no_flag():
+    # WGDC=100% throughout but boost never reaches 90% of target — all spool-up.
+    # Developed-boost filter must suppress the flag entirely.
+    df = make_mhd_df(n=20)
+    df["Boost (PSI)"] = np.linspace(5.0, 15.0, 20)   # max 15 < 0.9*20=18
+    df["Boost target (PSI)"] = np.full(20, 20.0)
+    df["WGDC (%)"] = np.full(20, 100.0)
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().performance_insights}
+    assert "wgdc_saturation" not in flags
+
+
+def test_wgdc_developed_boost_flags():
+    # WGDC=100% once boost is developed (rows 10+) — flag must fire.
+    df = make_mhd_df(n=20)
+    boost = np.full(20, 5.0)
+    boost[10:] = 20.0  # developed from row 10 onward (20 >= 0.9*20=18)
+    df["Boost (PSI)"] = boost
+    df["Boost target (PSI)"] = np.full(20, 20.0)
+    df["WGDC (%)"] = np.full(20, 100.0)
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().performance_insights}
+    assert "wgdc_saturation" in flags
+
+
+def test_load_miss_spool_only_no_flag():
+    # Large load miss (50%) but boost never develops — all spool-up transient.
+    # Developed-boost filter must suppress the flag entirely.
+    df = make_mhd_df(n=20)
+    df["Boost (PSI)"] = np.linspace(5.0, 15.0, 20)   # max 15 < 0.9*20=18
+    df["Boost target (PSI)"] = np.full(20, 20.0)
+    df["Load req. (%)"] = np.full(20, 90.0)
+    df["Load act. (%)"] = np.full(20, 40.0)            # 50% miss
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().performance_insights}
+    assert "load_miss" not in flags
+
+
+def test_load_miss_developed_boost_flags():
+    # Load miss of 30% only after boost is developed — flag must fire.
+    df = make_mhd_df(n=20)
+    boost = np.full(20, 5.0)
+    boost[10:] = 20.0
+    df["Boost (PSI)"] = boost
+    df["Boost target (PSI)"] = np.full(20, 20.0)
+    load_actual = np.full(20, 90.0)
+    load_actual[10:] = 60.0  # 30% miss once developed
+    df["Load req. (%)"] = np.full(20, 90.0)
+    df["Load act. (%)"] = load_actual
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().performance_insights}
+    assert "load_miss" in flags
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pillar B — rail pressure deficit vs. requirement (2 tests)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_rail_req_delta_b_fires():
+    # Rail=2200, requirement=2500 → 300 PSI deficit, well above 150 PSI threshold,
+    # sustained across all 20 rows (default boost=20 = developed). Flag must fire.
+    df = make_mhd_df(n=20)
+    df["Rail pressure req. (PSI)"] = np.full(20, 2500.0)
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
+    assert "rail_req_delta_b" in flags
+
+
+def test_rail_req_delta_b_no_false_positive():
+    # Rail=2200, requirement=2000 → rail is above requirement — no flag.
+    df = make_mhd_df(n=20)
+    df["Rail pressure req. (PSI)"] = np.full(20, 2000.0)
+    flags = {a.flag for a in B58DiagnosticEngine(df).run_analysis().alerts}
+    assert "rail_req_delta_b" not in flags
