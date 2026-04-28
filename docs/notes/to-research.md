@@ -36,6 +36,7 @@ All numeric limits in `ThresholdConfig` are currently research-derived estimates
 
 **Note:** Forum logs need to be labeled with known stage, fuel type, and any known issues to be useful for validation. An unlabeled log from someone who "thinks their car is fine" is hard to learn from.
 
+**Plan:** Research log review/tutorials on forums, consult for current best practices across platforms. 
 ---
 
 ## 3. Top 5–10 Most Common B58 Issues in the Wild
@@ -54,6 +55,8 @@ We need a ranked list of the most frequently seen B58 problems on tuned cars to 
 
 **Goal:** Confirm the engine is prioritizing its coverage correctly and not over-engineering detection for rare edge cases.
 
+**Plan:** Watch videos and take detailed notes, also research log review/tutorials on forums, consult for current best practices across platforms. 
+
 ---
 
 ## 4. Educational Messaging Depth
@@ -67,6 +70,7 @@ The current `beginner_message` field on each alert is a one-liner. The goal is t
 
 **Format to investigate:** Inline expandable explanations per alert, a glossary, or a "what to tell your tuner" summary at the bottom of the report.
 
+**Plan:** Simple consult with LLM
 ---
 
 ## 5. Gear Change Detection Robustness
@@ -79,6 +83,7 @@ The current gear change detection uses a 200 RPM drop in a single sample while t
 - Do manual and DCT/auto gearboxes produce different RPM drop signatures?
 
 **Goal:** Confirm the suppression window is wide enough to prevent false positives without masking real events that happen near a gear change.
+**Plan:** Test against real world logs, easy validation.
 
 ---
 
@@ -89,3 +94,5 @@ BM3 support is built but not validated against a real BM3 log. When we return to
 - Obtain a real BM3 CSV export and verify the column names match what's in the platform map.
 - Confirm whether BM3 metric exports need Bar→PSI and °C→°F normalization (MHD metric exports do).
 - Check if any BM3 columns are missing that MHD provides (or vice versa) and decide how the engine should handle absent columns gracefully.
+
+**Plan:** Will probably just figure this out through look at logs.
