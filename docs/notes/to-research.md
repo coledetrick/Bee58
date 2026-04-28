@@ -15,6 +15,7 @@ When an experienced B58 tuner reviews a WOT log manually, what are they actually
 
 **Goal:** Verify that our detection coverage matches or exceeds an expert's manual review process.
 
+**Plan:** Watch videos and take detailed notes, also research log review/tutorials on forums, consult for current best practices across platforms. 
 ---
 
 ## 2. Threshold Validation Against Real Logs
